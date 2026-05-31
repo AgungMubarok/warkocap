@@ -30,6 +30,7 @@ Modal.setAppElement("body");
 export default function Cart({ cart, onUpdateCart }: CartProps) {
   const [modalIsOpen, setModalIsOpen] = useState(false);
   const [isSummaryInView, setIsSummaryInView] = useState(true);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
   const summaryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -71,7 +72,7 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
   };
 
   const handleCheckout = async (paymentMethod: "cash" | "qris") => {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || isCheckingOut) return;
     closeModal();
 
     const totalBelanja = cart.reduce(
@@ -107,6 +108,8 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
       });
       return;
     }
+
+    setIsCheckingOut(true);
 
     const transactionData = {
       timestamp: serverTimestamp(),
@@ -155,8 +158,13 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
         transaction.set(transactionRef, transactionData);
       });
 
-      updateProductStocksInCache(stockUpdates);
-      invalidateTransactionCaches();
+      try {
+        updateProductStocksInCache(stockUpdates);
+        invalidateTransactionCaches();
+      } catch (cacheError) {
+        console.warn("Checkout cache sync skipped:", cacheError);
+      }
+
       Swal.fire({
         icon: "success",
         title: "Berhasil!",
@@ -164,11 +172,30 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
       });
       onUpdateCart([]); // Kosongkan keranjang
     } catch (error) {
+      console.error("Checkout error:", error);
+
+      const errorCode =
+        typeof error === "object" && error !== null && "code" in error
+          ? String(error.code)
+          : null;
+      const errorMessage =
+        typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : "Gagal menyimpan transaksi.";
+      const alertMessage =
+        errorCode === "resource-exhausted"
+          ? "Kuota Cloud Firestore project habis. Cek Firebase Console > Firestore > Usage atau tunggu reset kuota harian."
+          : errorCode
+          ? `${errorCode}: ${errorMessage}`
+          : errorMessage;
+
       Swal.fire({
         icon: "error",
         title: "Gagal!",
-        text: "Gagal menyimpan transaksi.",
+        text: alertMessage,
       });
+    } finally {
+      setIsCheckingOut(false);
     }
   };
 
@@ -255,10 +282,10 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
           </div>
           <button
             onClick={openModal}
-            disabled={cart.length === 0}
+            disabled={cart.length === 0 || isCheckingOut}
             className="w-full rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            Pilih Metode Pembayaran
+            {isCheckingOut ? "Memproses..." : "Pilih Metode Pembayaran"}
           </button>
         </div>
       </aside>
@@ -277,9 +304,10 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
             </div>
             <button
               onClick={openModal}
+              disabled={isCheckingOut}
               className="shrink-0 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
             >
-              Checkout
+              {isCheckingOut ? "Memproses..." : "Checkout"}
             </button>
           </div>
         </div>
@@ -301,15 +329,17 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
         <div className="space-y-4">
           <button
             onClick={() => handleCheckout("cash")}
+            disabled={isCheckingOut}
             className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white shadow-sm transition hover:bg-slate-800"
           >
-            Bayar Cash
+            {isCheckingOut ? "Memproses..." : "Bayar Cash"}
           </button>
           <button
             onClick={() => handleCheckout("qris")}
+            disabled={isCheckingOut}
             className="w-full rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 shadow-sm transition hover:bg-amber-300"
           >
-            Bayar QRIS
+            {isCheckingOut ? "Memproses..." : "Bayar QRIS"}
           </button>
         </div>
         <button

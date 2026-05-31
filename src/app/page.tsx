@@ -40,7 +40,34 @@ function HomePage() {
 
   return (
     <section className="space-y-5">
-      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,12rem))]">
+      <div className="rounded-[1.75rem] border border-white/60 bg-white/92 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:hidden">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+              Mode
+            </p>
+            <h1 className="mt-1 truncate text-xl font-bold text-slate-900">Kasir</h1>
+          </div>
+          <div className="h-10 w-px bg-slate-200" />
+          <div className="min-w-[3.5rem] text-center">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Item
+            </p>
+            <p className="mt-1 text-xl font-bold text-slate-900">{totalItems}</p>
+          </div>
+          <div className="h-10 w-px bg-slate-200" />
+          <div className="min-w-[6.75rem] text-right">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Total
+            </p>
+            <p className="mt-1 truncate text-xl font-bold text-slate-900">
+              {formatCurrency(totalValue)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="hidden gap-4 md:grid md:grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,12rem))]">
         <div className="rounded-[1.75rem] border border-white/60 bg-white/92 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
           <h1 className="text-2xl font-bold text-slate-900">Kasir</h1>
         </div>
