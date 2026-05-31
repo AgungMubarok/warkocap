@@ -107,6 +107,24 @@ Date handling follows Asia/Jakarta business time, including a daily reset at 4:0
 - `/admin/tambah` for adding new products
 - `/recap` for admin recap and export
 
+## Automatic Release Tags
+
+This repository now includes [`.github/workflows/auto-release.yml`](.github/workflows/auto-release.yml) to create Git tags and GitHub Releases automatically.
+
+- Every push to `main` creates a new release tag.
+- The first run bootstraps from the latest version found in [CHANGELOG.md](CHANGELOG.md). If no changelog version exists, it falls back to `package.json`.
+- By default, version bumps work like this:
+	- `BREAKING CHANGE`, `major:`, `[major]`, or `#major` => major bump
+	- `feat:`, `minor:`, `[minor]`, or `#minor` => minor bump
+	- any other change => patch bump
+- You can also run the workflow manually from GitHub Actions and choose `patch`, `minor`, `major`, or `auto`.
+
+Example commit messages:
+
+- `fix: adjust floating cart visibility` => patch release
+- `feat: add recap export filters` => minor release
+- `major: replace auth flow with a new session model` => major release
+
 ## Recommended Validation Before Release
 
 ```bash
