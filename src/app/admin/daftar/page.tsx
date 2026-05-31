@@ -1,16 +1,11 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  collection,
-  query,
-  orderBy,
-  getDocs,
-  where,
   doc,
   updateDoc,
   deleteDoc,
-  getCountFromServer,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import withAuth from "@/hooks/withAuth";
@@ -25,126 +20,157 @@ import {
 import Link from "next/link";
 import Modal from "react-modal";
 import Swal from "sweetalert2";
-
-// Definisikan tipe data untuk produk
-interface Product {
-  id: string;
-  namaProduk: string;
-  hargaJual: number;
-  hargaModal: number;
-}
+import {
+  formatCurrency,
+  formatCurrencyInput,
+  normalizeCurrencyInput,
+  parseCurrencyInput,
+} from "@/lib/date-range";
+import {
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronsLeftIcon,
+  ChevronsRightIcon,
+  SortIndicator,
+} from "@/components/ui/icons";
+import {
+  removeProductFromCache,
+  upsertProductInCache,
+} from "@/lib/firebase-data";
+import { useProductCatalog } from "@/hooks/useProductCatalog";
+import type { Product } from "@/lib/types";
 
 // Atur elemen root untuk modal (untuk aksesibilitas)
 Modal.setAppElement("body");
 
 function DaftarProdukPage() {
-  // State untuk data dan UI
-  const [products, setProducts] = useState<Product[]>([]);
-  const [isFetching, setIsFetching] = useState(false);
+  const { products, isLoading } = useProductCatalog();
 
-  // State untuk Edit Modal
   const [modalIsOpen, setModalIsOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [editHargaJualInput, setEditHargaJualInput] = useState("");
+  const [editHargaModalInput, setEditHargaModalInput] = useState("");
 
-  // State untuk Server-Side Processing
   const [globalFilter, setGlobalFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([]);
   const [{ pageIndex, pageSize }, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: 10,
   });
-  const [pageCount, setPageCount] = useState(0);
 
-  // Fetch data dari Firestore dengan logika server-side
   useEffect(() => {
-    const fetchData = async () => {
-      setIsFetching(true);
+    setPagination((currentPagination) => ({
+      ...currentPagination,
+      pageIndex: 0,
+    }));
+  }, [globalFilter, pageSize]);
 
-      // Query dasar
-      let productQuery = query(collection(db, "products"));
-      let countQuery = query(collection(db, "products"));
+  const filteredProducts = useMemo(() => {
+    const filteredCatalog = globalFilter
+      ? products.filter((product) =>
+          product.namaProduk_lowercase.includes(globalFilter)
+        )
+      : products;
 
-      // 1. Terapkan Filter/Pencarian (Server-Side)
-      if (globalFilter) {
-        const endFilterText = globalFilter + "\uf8ff";
-        productQuery = query(
-          productQuery,
-          where("namaProduk_lowercase", ">=", globalFilter),
-          where("namaProduk_lowercase", "<=", endFilterText)
-        );
-        countQuery = query(
-          countQuery,
-          where("namaProduk_lowercase", ">=", globalFilter),
-          where("namaProduk_lowercase", "<=", endFilterText)
-        );
+    if (sorting.length === 0) {
+      return filteredCatalog;
+    }
+
+    const { id, desc } = sorting[0];
+    return [...filteredCatalog].sort((leftProduct, rightProduct) => {
+      const leftValue = leftProduct[id as keyof Product];
+      const rightValue = rightProduct[id as keyof Product];
+
+      if (typeof leftValue === "number" && typeof rightValue === "number") {
+        return desc ? rightValue - leftValue : leftValue - rightValue;
       }
 
-      // Hitung total produk yang cocok untuk pagination
-      try {
-        const snapshot = await getCountFromServer(countQuery);
-        const totalProducts = snapshot.data().count;
-        setPageCount(Math.ceil(totalProducts / pageSize));
-      } catch (error) {
-        console.error("Error counting documents: ", error);
-        // Jika gagal menghitung, fallback ke 0
-        setPageCount(0);
-      }
+      return desc
+        ? String(rightValue ?? "").localeCompare(String(leftValue ?? ""))
+        : String(leftValue ?? "").localeCompare(String(rightValue ?? ""));
+    });
+  }, [products, globalFilter, sorting]);
 
-      // 2. Terapkan Sorting (Server-Side)
-      if (sorting.length > 0) {
-        const sortConfig = sorting[0];
-        productQuery = query(
-          productQuery,
-          orderBy(sortConfig.id, sortConfig.desc ? "desc" : "asc")
-        );
-      } else {
-        // Default sort jika tidak ada sorting yang dipilih
-        productQuery = query(
-          productQuery,
-          orderBy("namaProduk_lowercase", "asc")
-        );
-      }
+  const lowStockCount = useMemo(
+    () =>
+      products.filter(
+        (product) => typeof product.stok === "number" && product.stok <= 5
+      ).length,
+    [products]
+  );
 
-      // 3. Terapkan Pagination (Server-Side)
-      // Ini adalah simplifikasi. Untuk data sangat besar (>100rb), arsitektur cursor dengan startAfter/endBefore lebih direkomendasikan.
-      // Untuk saat ini, kita fetch semua yang terfilter lalu slice di client sebagai kompromi.
-      const querySnapshot = await getDocs(productQuery);
-      const allFilteredProducts = querySnapshot.docs.map(
-        (doc) => ({ id: doc.id, ...doc.data() } as Product)
-      );
-      const offset = pageIndex * pageSize;
-      setProducts(allFilteredProducts.slice(offset, offset + pageSize));
+  const pageCount =
+    filteredProducts.length === 0 ? 0 : Math.ceil(filteredProducts.length / pageSize);
 
-      setIsFetching(false);
-    };
+  useEffect(() => {
+    const maxPageIndex = pageCount > 0 ? pageCount - 1 : 0;
 
-    fetchData();
-  }, [pageIndex, pageSize, globalFilter, sorting]);
+    if (pageIndex > maxPageIndex) {
+      setPagination((currentPagination) => ({
+        ...currentPagination,
+        pageIndex: maxPageIndex,
+      }));
+    }
+  }, [pageCount, pageIndex]);
 
-  // Fungsi untuk membuka modal edit
+  const paginatedProducts = useMemo(() => {
+    const startIndex = pageIndex * pageSize;
+    return filteredProducts.slice(startIndex, startIndex + pageSize);
+  }, [filteredProducts, pageIndex, pageSize]);
+
   const openEditModal = (product: Product) => {
     setSelectedProduct(product);
+    setEditHargaJualInput(product.hargaJual > 0 ? `${product.hargaJual}` : "");
+    setEditHargaModalInput(product.hargaModal > 0 ? `${product.hargaModal}` : "");
     setModalIsOpen(true);
   };
 
-  // Fungsi untuk menutup modal edit
   const closeEditModal = () => {
     setModalIsOpen(false);
     setSelectedProduct(null);
+    setEditHargaJualInput("");
+    setEditHargaModalInput("");
   };
 
-  // Fungsi untuk mengirim data update produk
   const handleUpdateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProduct) return;
+
+    const hargaJualValue = parseCurrencyInput(editHargaJualInput);
+    const hargaModalValue = parseCurrencyInput(editHargaModalInput);
+
+    if (!selectedProduct.namaProduk || hargaJualValue <= 0) {
+      Swal.fire({
+        icon: "warning",
+        title: "Oops...",
+        text: "Nama produk dan harga jual wajib diisi.",
+      });
+      return;
+    }
+
     const productRef = doc(db, "products", selectedProduct.id);
+    const nextProduct = {
+      ...selectedProduct,
+      hargaJual: hargaJualValue,
+      hargaModal: hargaModalValue,
+      stok:
+        typeof selectedProduct.stok === "number" &&
+        Number.isFinite(selectedProduct.stok)
+          ? Number(selectedProduct.stok)
+          : null,
+      namaProduk_lowercase: selectedProduct.namaProduk.toLowerCase(),
+    };
     try {
       await updateDoc(productRef, {
-        namaProduk: selectedProduct.namaProduk,
-        hargaJual: Number(selectedProduct.hargaJual),
-        hargaModal: Number(selectedProduct.hargaModal),
-        namaProduk_lowercase: selectedProduct.namaProduk.toLowerCase(),
+        namaProduk: nextProduct.namaProduk,
+        hargaJual: nextProduct.hargaJual,
+        hargaModal: nextProduct.hargaModal,
+        stok: nextProduct.stok,
+        namaProduk_lowercase: nextProduct.namaProduk_lowercase,
+        updatedAt: serverTimestamp(),
       });
+      upsertProductInCache(nextProduct);
       Swal.fire({
         icon: "success",
         title: "Berhasil!",
@@ -175,6 +201,7 @@ function DaftarProdukPage() {
       if (result.isConfirmed) {
         try {
           await deleteDoc(doc(db, "products", productId));
+          removeProductFromCache(productId);
           Swal.fire("Terhapus!", "Produk berhasil dihapus.", "success");
         } catch (error) {
           Swal.fire("Gagal!", "Gagal menghapus produk.", "error");
@@ -183,20 +210,43 @@ function DaftarProdukPage() {
     });
   };
 
-  // Definisi Kolom untuk TanStack Table
   const columns = useMemo<ColumnDef<Product>[]>(
     () => [
       { accessorKey: "namaProduk", header: "Nama Produk", enableSorting: true },
       {
         accessorKey: "hargaJual",
         header: "Harga Jual",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
+        cell: (info) => formatCurrency(info.getValue<number>()),
         enableSorting: true,
       },
       {
         accessorKey: "hargaModal",
         header: "Harga Modal",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
+        cell: (info) => formatCurrency(info.getValue<number>()),
+        enableSorting: true,
+      },
+      {
+        accessorKey: "stok",
+        header: "Stok",
+        cell: ({ row }) => {
+          if (typeof row.original.stok !== "number") {
+            return <span className="text-xs text-slate-500">Belum diatur</span>;
+          }
+
+          return (
+            <span
+              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                row.original.stok <= 0
+                  ? "bg-rose-100 text-rose-700"
+                  : row.original.stok <= 5
+                  ? "bg-amber-100 text-amber-700"
+                  : "bg-emerald-100 text-emerald-700"
+              }`}
+            >
+              {row.original.stok} pcs
+            </span>
+          );
+        },
         enableSorting: true,
       },
       {
@@ -206,13 +256,13 @@ function DaftarProdukPage() {
           <div className="flex space-x-2">
             <button
               onClick={() => openEditModal(row.original)}
-              className="text-yellow-600 hover:underline"
+              className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700 transition hover:bg-amber-200"
             >
               Edit
             </button>
             <button
               onClick={() => handleDeleteProduct(row.original.id)}
-              className="text-red-600 hover:underline"
+              className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-200"
             >
               Hapus
             </button>
@@ -223,11 +273,10 @@ function DaftarProdukPage() {
     []
   );
 
-  // Inisialisasi React Table
   const table = useReactTable({
-    data: products,
+    data: paginatedProducts,
     columns,
-    pageCount,
+    pageCount: pageCount || 1,
     state: { sorting, pagination: { pageIndex, pageSize } },
     manualPagination: true,
     manualSorting: true,
@@ -237,142 +286,225 @@ function DaftarProdukPage() {
     getCoreRowModel: getCoreRowModel(),
   });
 
+  const visiblePageCount = pageCount || 1;
+
   return (
-    <div className="container mx-auto p-8">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Daftar Produk</h1>
+    <section className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-4 md:px-6 md:py-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 px-5 py-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <h1 className="text-2xl font-bold text-slate-900">Daftar Produk</h1>
+        </div>
         <Link
           href="/admin/tambah"
-          className="bg-blue-600 text-white font-bold py-2 px-4 rounded hover:bg-blue-700"
+          className="inline-flex items-center justify-center rounded-[1.75rem] bg-slate-950 px-5 py-4 text-sm font-semibold text-white transition hover:bg-slate-800"
         >
           + Tambah Produk
         </Link>
       </div>
 
-      <div className="flex justify-between items-center mb-4">
-        <input
-          type="text"
-          onChange={(e) => setGlobalFilter(e.target.value.toLowerCase())}
-          placeholder="Cari produk..."
-          className="p-2 border border-gray-300 rounded-md w-full md:w-1/2"
-        />
-        <select
-          value={table.getState().pagination.pageSize}
-          onChange={(e) => {
-            table.setPageSize(Number(e.target.value));
-          }}
-          className="p-2 border border-gray-300 rounded-md"
-        >
-          {[10, 20, 30, 50].map((size) => (
-            <option key={size} value={size}>
-              Tampil {size}
-            </option>
-          ))}
-        </select>
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[1.5rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Total produk</p>
+          <p className="mt-2 text-3xl font-bold text-slate-900">{products.length}</p>
+        </div>
+        <div className="rounded-[1.5rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Stok rendah</p>
+          <p className="mt-2 text-3xl font-bold text-amber-600">{lowStockCount}</p>
+        </div>
+        <div className="rounded-[1.5rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Produk terfilter</p>
+          <p className="mt-2 text-3xl font-bold text-slate-900">{filteredProducts.length}</p>
+        </div>
       </div>
 
-      <div className="overflow-auto rounded-lg border border-gray-200 bg-white h-[60vh]">
-        <table className="w-full text-sm text-left text-gray-700">
-          <thead className="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0">
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <th
-                    key={header.id}
-                    scope="col"
-                    className="px-6 py-3 cursor-pointer"
-                    onClick={header.column.getToggleSortingHandler()}
+      <div className="rounded-[2rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <input
+            type="text"
+            onChange={(e) => setGlobalFilter(e.target.value.toLowerCase())}
+            placeholder="Cari produk..."
+            className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+          />
+          <div className="relative w-full sm:w-auto sm:min-w-[11rem] xl:shrink-0">
+            <select
+              value={table.getState().pagination.pageSize}
+              onChange={(e) => {
+                table.setPageSize(Number(e.target.value));
+              }}
+              className="w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-11 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+            >
+              {[10, 20, 30, 50].map((size) => (
+                <option key={size} value={size}>
+                  Tampil {size}
+                </option>
+              ))}
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:hidden">
+          {isLoading ? (
+            <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+              Memuat katalog produk...
+            </div>
+          ) : paginatedProducts.length > 0 ? (
+            paginatedProducts.map((product) => (
+              <article
+                key={product.id}
+                className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+              >
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">
+                      {product.namaProduk}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      Jual {formatCurrency(product.hargaJual)}
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      Modal {formatCurrency(product.hargaModal)}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
+                    {typeof product.stok === "number"
+                      ? `${product.stok} pcs`
+                      : "Stok belum diatur"}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => openEditModal(product)}
+                    className="rounded-full bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-700 transition hover:bg-amber-200"
                   >
-                    {flexRender(
-                      header.column.columnDef.header,
-                      header.getContext()
-                    )}
-                    {{ asc: " 🔼", desc: " 🔽" }[
-                      header.column.getIsSorted() as string
-                    ] ?? ""}
-                  </th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {isFetching ? (
-              <tr>
-                <td colSpan={columns.length} className="text-center p-4">
-                  Memuat data...
-                </td>
-              </tr>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <tr key={row.id} className="border-b hover:bg-gray-50">
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-6 py-4">
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDeleteProduct(product.id)}
+                    className="rounded-full bg-rose-100 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-200"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+              Produk tidak ditemukan.
+            </div>
+          )}
+        </div>
+
+        <div className="hidden overflow-auto rounded-[1.5rem] border border-slate-200 md:block">
+          <table className="w-full text-left text-sm text-slate-700">
+            <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-500">
+              {table.getHeaderGroups().map((headerGroup) => (
+                <tr key={headerGroup.id}>
+                  {headerGroup.headers.map((header) => (
+                    <th
+                      key={header.id}
+                      scope="col"
+                      className="cursor-pointer px-5 py-4"
+                      onClick={header.column.getToggleSortingHandler()}
+                    >
                       {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext()
+                        header.column.columnDef.header,
+                        header.getContext()
                       )}
-                    </td>
+                      <SortIndicator direction={header.column.getIsSorted()} />
+                    </th>
                   ))}
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ))}
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr>
+                  <td colSpan={columns.length} className="p-6 text-center text-slate-500">
+                    Memuat data...
+                  </td>
+                </tr>
+              ) : paginatedProducts.length > 0 ? (
+                table.getRowModel().rows.map((row) => (
+                  <tr key={row.id} className="border-b border-slate-100 hover:bg-slate-50/80">
+                    {row.getVisibleCells().map((cell) => (
+                      <td key={cell.id} className="px-5 py-4 align-top">
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext()
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={columns.length} className="p-6 text-center text-slate-500">
+                    Produk tidak ditemukan.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
 
-      <div className="flex items-center justify-center gap-2 mt-4">
-        <button
-          onClick={() => table.setPageIndex(0)}
-          disabled={!table.getCanPreviousPage()}
-          className="px-2 py-1 border rounded"
-        >
-          {"<<"}
-        </button>
-        <button
-          onClick={() => table.previousPage()}
-          disabled={!table.getCanPreviousPage()}
-          className="px-2 py-1 border rounded"
-        >
-          {"<"}
-        </button>
-        <span className="flex items-center gap-1">
-          <div>Halaman</div>
-          <strong>
-            {table.getState().pagination.pageIndex + 1} dari{" "}
-            {table.getPageCount()}
-          </strong>
-        </span>
-        <button
-          onClick={() => table.nextPage()}
-          disabled={!table.getCanNextPage()}
-          className="px-2 py-1 border rounded"
-        >
-          {">"}
-        </button>
-        <button
-          onClick={() => table.setPageIndex(table.getPageCount() - 1)}
-          disabled={!table.getCanNextPage()}
-          className="px-2 py-1 border rounded"
-        >
-          {">>"}
-        </button>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-sm text-slate-600">
+          <button
+            onClick={() => table.setPageIndex(0)}
+            disabled={!table.getCanPreviousPage()}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Halaman pertama"
+          >
+            <ChevronsLeftIcon className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => table.previousPage()}
+            disabled={!table.getCanPreviousPage()}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Halaman sebelumnya"
+          >
+            <ChevronLeftIcon className="h-4 w-4" />
+          </button>
+          <span className="flex items-center gap-1 rounded-xl bg-slate-100 px-4 py-2">
+            <span>Halaman</span>
+            <strong>
+              {table.getState().pagination.pageIndex + 1} dari {visiblePageCount}
+            </strong>
+          </span>
+          <button
+            onClick={() => table.nextPage()}
+            disabled={!table.getCanNextPage()}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Halaman berikutnya"
+          >
+            <ChevronRightIcon className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => table.setPageIndex(visiblePageCount - 1)}
+            disabled={!table.getCanNextPage()}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Halaman terakhir"
+          >
+            <ChevronsRightIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <Modal
         isOpen={modalIsOpen}
         onRequestClose={closeEditModal}
         contentLabel="Edit Produk"
-        className="bg-white rounded-lg shadow-xl p-8 max-w-lg mx-auto mt-20"
-        overlayClassName="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center"
+        className="app-modal-content w-full max-w-2xl p-6 md:p-8"
+        overlayClassName="app-modal-overlay"
       >
         {selectedProduct && (
           <form onSubmit={handleUpdateProduct}>
-            <h2 className="text-2xl font-bold mb-6">Edit Produk</h2>
+            <h2 className="mb-6 text-2xl font-bold text-slate-900">Edit Produk</h2>
             <div className="space-y-4">
               <div>
                 <label
                   htmlFor="editNamaProduk"
-                  className="block text-sm font-medium text-gray-700"
+                  className="block text-sm font-medium text-slate-700"
                 >
                   Nama Produk
                 </label>
@@ -386,61 +518,76 @@ function DaftarProdukPage() {
                       namaProduk: e.target.value,
                     })
                   }
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
                 />
               </div>
               <div>
                 <label
                   htmlFor="editHargaJual"
-                  className="block text-sm font-medium text-gray-700"
+                  className="block text-sm font-medium text-slate-700"
                 >
                   Harga Jual
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   id="editHargaJual"
-                  value={selectedProduct.hargaJual}
-                  onChange={(e) =>
-                    setSelectedProduct({
-                      ...selectedProduct,
-                      hargaJual: Number(e.target.value),
-                    })
-                  }
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                  inputMode="numeric"
+                  value={formatCurrencyInput(editHargaJualInput)}
+                  onChange={(e) => setEditHargaJualInput(normalizeCurrencyInput(e.target.value))}
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+                  placeholder="Rp 0"
                 />
               </div>
               <div>
                 <label
                   htmlFor="editHargaModal"
-                  className="block text-sm font-medium text-gray-700"
+                  className="block text-sm font-medium text-slate-700"
                 >
                   Harga Modal <span className="text-gray-400">(Opsional)</span>
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   id="editHargaModal"
-                  value={selectedProduct.hargaModal || ""}
+                  inputMode="numeric"
+                  value={formatCurrencyInput(editHargaModalInput)}
+                  onChange={(e) => setEditHargaModalInput(normalizeCurrencyInput(e.target.value))}
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+                  placeholder="Rp 0"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="editStok"
+                  className="block text-sm font-medium text-slate-700"
+                >
+                  Stok
+                </label>
+                <input
+                  type="number"
+                  id="editStok"
+                  min="0"
+                  value={selectedProduct.stok ?? ""}
                   onChange={(e) =>
                     setSelectedProduct({
                       ...selectedProduct,
-                      hargaModal: Number(e.target.value),
+                      stok: e.target.value === "" ? null : Number(e.target.value),
                     })
                   }
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
                 />
               </div>
             </div>
-            <div className="mt-6 flex justify-end space-x-4">
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button
                 type="button"
                 onClick={closeEditModal}
-                className="bg-gray-200 text-gray-800 px-4 py-2 rounded-md"
+                className="rounded-2xl bg-slate-100 px-4 py-3 text-slate-700"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="bg-blue-600 text-white px-4 py-2 rounded-md"
+                className="rounded-2xl bg-slate-950 px-4 py-3 text-white"
               >
                 Simpan Perubahan
               </button>
@@ -448,7 +595,7 @@ function DaftarProdukPage() {
           </form>
         )}
       </Modal>
-    </div>
+    </section>
   );
 }
 

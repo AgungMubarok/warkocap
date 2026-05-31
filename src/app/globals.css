@@ -1,26 +1,104 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f6efe2;
+  --foreground: #0f172a;
+  --surface: rgba(255, 255, 255, 0.74);
+  --border: rgba(255, 255, 255, 0.58);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-sans);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
-  /* background: var(--background);
-  color: var(--foreground); */
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.9), transparent 34%),
+    linear-gradient(180deg, #fff8ee 0%, #f7f1e5 46%, #efe8da 100%);
+  color: var(--foreground);
+  font-family: var(--font-sans), sans-serif;
+}
+
+a:not([class]) {
+  color: inherit;
+  text-decoration: none;
+}
+
+a[class] {
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: #f59e0b;
+  color: #0f172a;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.45);
+}
+
+.font-display {
+  font-family: var(--font-display), serif;
+}
+
+.ReactModal__Body--open,
+.ReactModal__Html--open {
+  overflow: hidden;
+}
+
+.app-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.68);
+  backdrop-filter: blur(6px);
+}
+
+.app-modal-content {
+  position: relative !important;
+  inset: auto !important;
+  max-height: min(88vh, 48rem);
+  overflow: auto;
+  border: none !important;
+  border-radius: 1.75rem;
+  background: rgba(255, 255, 255, 0.98) !important;
+  box-shadow: 0 32px 96px rgba(15, 23, 42, 0.24);
+  outline: none !important;
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { collection, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase"; // Import koneksi firestore
+import { formatCurrency } from "@/lib/date-range";
 
 // Definisikan tipe data untuk produk
 interface Product {
@@ -54,9 +55,7 @@ export default function ProductList({ onAddToCart }: ProductListProps) {
           >
             <div>
               <h3 className="font-semibold text-lg">{product.namaProduk}</h3>
-              <p className="text-gray-600">
-                Rp {product.hargaJual.toLocaleString("id-ID")}
-              </p>
+              <p className="text-gray-600">{formatCurrency(product.hargaJual)}</p>
             </div>
             <button
               onClick={() => onAddToCart(product)}

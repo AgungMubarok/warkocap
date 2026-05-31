@@ -1,15 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import {
-  collection,
-  query,
-  orderBy,
-  getDocs,
-  where,
-  getCountFromServer,
-} from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { useEffect, useMemo, useState } from "react";
 import {
   useReactTable,
   getCoreRowModel,
@@ -18,104 +9,132 @@ import {
   SortingState,
   PaginationState,
 } from "@tanstack/react-table";
-
-// Definisikan tipe data produk yang lengkap
-interface Product {
-  id: string;
-  namaProduk: string;
-  hargaJual: number;
-  hargaModal: number;
-}
+import { useProductCatalog } from "@/hooks/useProductCatalog";
+import { formatCurrency } from "@/lib/date-range";
+import {
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronsLeftIcon,
+  ChevronsRightIcon,
+  SortIndicator,
+} from "@/components/ui/icons";
+import type { CartItem, Product } from "@/lib/types";
 
 interface ProductDataTableProps {
   onAddToCart: (product: Product) => void;
+  cart: CartItem[];
 }
 
 export default function ProductDataTable({
   onAddToCart,
+  cart,
 }: ProductDataTableProps) {
-  // State untuk data dan UI
-  const [products, setProducts] = useState<Product[]>([]);
-  const [isFetching, setIsFetching] = useState(false);
+  const { products, isLoading } = useProductCatalog();
 
-  // State untuk Server-Side Processing
   const [globalFilter, setGlobalFilter] = useState("");
   const [sorting, setSorting] = useState<SortingState>([]);
   const [{ pageIndex, pageSize }, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: 10,
   });
-  const [pageCount, setPageCount] = useState(0);
+  const cartQuantities = useMemo(
+    () =>
+      cart.reduce<Record<string, number>>((result, item) => {
+        result[item.id] = item.quantity;
+        return result;
+      }, {}),
+    [cart]
+  );
 
-  // Fetch data dari Firestore dengan logika server-side
   useEffect(() => {
-    const fetchData = async () => {
-      setIsFetching(true);
+    setPagination((currentPagination) => ({
+      ...currentPagination,
+      pageIndex: 0,
+    }));
+  }, [globalFilter, pageSize]);
 
-      let productQuery = query(collection(db, "products"));
-      let countQuery = query(collection(db, "products"));
+  const filteredProducts = useMemo(() => {
+    const filteredCatalog = globalFilter
+      ? products.filter((product) =>
+          product.namaProduk_lowercase.includes(globalFilter)
+        )
+      : products;
 
-      // 1. Terapkan Filter/Pencarian (Server-Side)
-      if (globalFilter) {
-        const endFilterText = globalFilter + "\uf8ff";
-        productQuery = query(
-          productQuery,
-          where("namaProduk_lowercase", ">=", globalFilter),
-          where("namaProduk_lowercase", "<=", endFilterText)
-        );
-        countQuery = query(
-          countQuery,
-          where("namaProduk_lowercase", ">=", globalFilter),
-          where("namaProduk_lowercase", "<=", endFilterText)
-        );
+    if (sorting.length === 0) {
+      return filteredCatalog;
+    }
+
+    const { id, desc } = sorting[0];
+    return [...filteredCatalog].sort((leftProduct, rightProduct) => {
+      const leftValue = leftProduct[id as keyof Product];
+      const rightValue = rightProduct[id as keyof Product];
+
+      if (typeof leftValue === "number" && typeof rightValue === "number") {
+        return desc ? rightValue - leftValue : leftValue - rightValue;
       }
 
-      // Hitung total produk yang cocok untuk pagination
-      try {
-        const snapshot = await getCountFromServer(countQuery);
-        const totalProducts = snapshot.data().count;
-        setPageCount(Math.ceil(totalProducts / pageSize));
-      } catch (error) {
-        console.error("Error counting documents: ", error);
-        setPageCount(0);
-      }
+      return desc
+        ? String(rightValue ?? "").localeCompare(String(leftValue ?? ""))
+        : String(leftValue ?? "").localeCompare(String(rightValue ?? ""));
+    });
+  }, [products, globalFilter, sorting]);
 
-      // 2. Terapkan Sorting (Server-Side)
-      if (sorting.length > 0) {
-        const sortConfig = sorting[0];
-        productQuery = query(
-          productQuery,
-          orderBy(sortConfig.id, sortConfig.desc ? "desc" : "asc")
-        );
-      } else {
-        productQuery = query(
-          productQuery,
-          orderBy("namaProduk_lowercase", "asc")
-        );
-      }
+  const pageCount =
+    filteredProducts.length === 0 ? 0 : Math.ceil(filteredProducts.length / pageSize);
 
-      // 3. Terapkan Pagination (Server-Side)
-      const querySnapshot = await getDocs(productQuery);
-      const allFilteredProducts = querySnapshot.docs.map(
-        (doc) => ({ id: doc.id, ...doc.data() } as Product)
-      );
-      const offset = pageIndex * pageSize;
-      setProducts(allFilteredProducts.slice(offset, offset + pageSize));
+  useEffect(() => {
+    const maxPageIndex = pageCount > 0 ? pageCount - 1 : 0;
 
-      setIsFetching(false);
-    };
+    if (pageIndex > maxPageIndex) {
+      setPagination((currentPagination) => ({
+        ...currentPagination,
+        pageIndex: maxPageIndex,
+      }));
+    }
+  }, [pageCount, pageIndex]);
 
-    fetchData();
-  }, [pageIndex, pageSize, globalFilter, sorting]);
+  const paginatedProducts = useMemo(() => {
+    const startIndex = pageIndex * pageSize;
+    return filteredProducts.slice(startIndex, startIndex + pageSize);
+  }, [filteredProducts, pageIndex, pageSize]);
 
-  // Definisi Kolom untuk TanStack Table
   const columns = useMemo<ColumnDef<Product>[]>(
     () => [
       { accessorKey: "namaProduk", header: "Nama Produk", enableSorting: true },
       {
         accessorKey: "hargaJual",
         header: "Harga",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
+        cell: (info) => formatCurrency(info.getValue<number>()),
+        enableSorting: true,
+      },
+      {
+        accessorKey: "stok",
+        header: "Stok",
+        cell: ({ row }) => {
+          const stock = row.original.stok;
+          const stockInCart = cartQuantities[row.original.id] ?? 0;
+
+          if (typeof stock !== "number") {
+            return <span className="text-xs text-slate-500">Belum diatur</span>;
+          }
+
+          const remainingStock = stock - stockInCart;
+
+          return (
+            <span
+              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                remainingStock <= 0
+                  ? "bg-rose-100 text-rose-700"
+                  : remainingStock <= 5
+                  ? "bg-amber-100 text-amber-700"
+                  : "bg-emerald-100 text-emerald-700"
+              }`}
+            >
+              {remainingStock} tersisa
+            </span>
+          );
+        },
         enableSorting: true,
       },
       {
@@ -124,21 +143,24 @@ export default function ProductDataTable({
         cell: ({ row }) => (
           <button
             onClick={() => onAddToCart(row.original)}
-            className="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600"
+            disabled={
+              typeof row.original.stok === "number" &&
+              row.original.stok - (cartQuantities[row.original.id] ?? 0) <= 0
+            }
+            className="inline-flex w-full items-center justify-center rounded-2xl bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            Tambah
+            Tambah ke Keranjang
           </button>
         ),
       },
     ],
-    [onAddToCart]
+    [cartQuantities, onAddToCart]
   );
 
-  // Inisialisasi React Table
   const table = useReactTable({
-    data: products,
+    data: paginatedProducts,
     columns,
-    pageCount,
+    pageCount: pageCount || 1,
     state: { sorting, pagination: { pageIndex, pageSize } },
     manualPagination: true,
     manualSorting: true,
@@ -148,66 +170,124 @@ export default function ProductDataTable({
     getCoreRowModel: getCoreRowModel(),
   });
 
+  const visiblePageCount = pageCount || 1;
+
   return (
-    <div className="p-4 w-full flex flex-col h-full bg-white rounded-lg shadow">
-      <div className="flex justify-between items-center mb-4">
+    <section className="rounded-[2rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <input
           type="text"
           onChange={(e) => setGlobalFilter(e.target.value.toLowerCase())}
           placeholder="Cari produk..."
-          className="p-2 border border-gray-300 rounded-md w-full md:w-1/2"
+          className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
         />
-        <select
-          value={table.getState().pagination.pageSize}
-          onChange={(e) => {
-            table.setPageSize(Number(e.target.value));
-          }}
-          className="p-2 border border-gray-300 rounded-md"
-        >
-          {[10, 20, 30, 50].map((size) => (
-            <option key={size} value={size}>
-              Tampil {size}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-col gap-3 sm:flex-row md:shrink-0">
+          <div className="inline-flex min-h-[3.25rem] items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-600 sm:min-w-[9.5rem] sm:justify-start">
+            {filteredProducts.length} produk aktif
+          </div>
+          <div className="relative sm:min-w-[11rem]">
+            <select
+              value={table.getState().pagination.pageSize}
+              onChange={(e) => {
+                table.setPageSize(Number(e.target.value));
+              }}
+              className="w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-11 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+            >
+              {[10, 20, 30, 50].map((size) => (
+                <option key={size} value={size}>
+                  Tampil {size}
+                </option>
+              ))}
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          </div>
+        </div>
       </div>
 
-      <div className="overflow-auto rounded-lg border border-gray-200 flex-grow">
-        <table className="w-full text-sm text-left text-gray-700">
-          <thead className="text-xs text-gray-700 uppercase bg-gray-50 sticky top-0">
+      <div className="grid gap-3 md:hidden">
+        {isLoading ? (
+          <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+            Memuat katalog produk...
+          </div>
+        ) : paginatedProducts.length > 0 ? (
+          paginatedProducts.map((product) => {
+            const stockInCart = cartQuantities[product.id] ?? 0;
+            const remainingStock =
+              typeof product.stok === "number"
+                ? product.stok - stockInCart
+                : null;
+
+            return (
+              <article
+                key={product.id}
+                className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+              >
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">{product.namaProduk}</h3>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
+                    {remainingStock === null
+                      ? "Stok belum diatur"
+                      : `${remainingStock} stok`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-lg font-semibold text-slate-900">
+                    {formatCurrency(product.hargaJual)}
+                  </p>
+                  <button
+                    onClick={() => onAddToCart(product)}
+                    disabled={remainingStock !== null && remainingStock <= 0}
+                    className="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    Tambah
+                  </button>
+                </div>
+              </article>
+            );
+          })
+        ) : (
+          <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+            Produk tidak ditemukan.
+          </div>
+        )}
+      </div>
+
+      <div className="hidden overflow-auto rounded-[1.5rem] border border-slate-200 md:block">
+        <table className="w-full text-left text-sm text-slate-700">
+          <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-500">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
                   <th
                     key={header.id}
                     scope="col"
-                    className="px-6 py-3 cursor-pointer"
+                    className="cursor-pointer px-5 py-4"
                     onClick={header.column.getToggleSortingHandler()}
                   >
                     {flexRender(
                       header.column.columnDef.header,
                       header.getContext()
                     )}
-                    {{ asc: " 🔼", desc: " 🔽" }[
-                      header.column.getIsSorted() as string
-                    ] ?? ""}
+                    <SortIndicator direction={header.column.getIsSorted()} />
                   </th>
                 ))}
               </tr>
             ))}
           </thead>
           <tbody>
-            {isFetching ? (
+            {isLoading ? (
               <tr>
-                <td colSpan={columns.length} className="text-center p-4">
+                <td colSpan={columns.length} className="p-6 text-center text-slate-500">
                   Memuat data...
                 </td>
               </tr>
-            ) : (
+            ) : paginatedProducts.length > 0 ? (
               table.getRowModel().rows.map((row) => (
-                <tr key={row.id} className="border-b hover:bg-gray-50">
+                <tr key={row.id} className="border-b border-slate-100 hover:bg-slate-50/80">
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-6 py-4">
+                    <td key={cell.id} className="px-5 py-4 align-top">
                       {flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext()
@@ -216,48 +296,58 @@ export default function ProductDataTable({
                   ))}
                 </tr>
               ))
+            ) : (
+              <tr>
+                <td colSpan={columns.length} className="p-6 text-center text-slate-500">
+                  Produk tidak ditemukan.
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
       </div>
 
-      <div className="flex items-center justify-center gap-2 mt-4">
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-sm text-slate-600">
         <button
           onClick={() => table.setPageIndex(0)}
           disabled={!table.getCanPreviousPage()}
-          className="px-2 py-1 border rounded"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Halaman pertama"
         >
-          {"<<"}
+          <ChevronsLeftIcon className="h-4 w-4" />
         </button>
         <button
           onClick={() => table.previousPage()}
           disabled={!table.getCanPreviousPage()}
-          className="px-2 py-1 border rounded"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Halaman sebelumnya"
         >
-          {"<"}
+          <ChevronLeftIcon className="h-4 w-4" />
         </button>
-        <span className="flex items-center gap-1">
-          <div>Halaman</div>
+        <span className="flex items-center gap-1 rounded-xl bg-slate-100 px-4 py-2">
+          <span>Halaman</span>
           <strong>
             {table.getState().pagination.pageIndex + 1} dari{" "}
-            {table.getPageCount()}
+            {visiblePageCount}
           </strong>
         </span>
         <button
           onClick={() => table.nextPage()}
           disabled={!table.getCanNextPage()}
-          className="px-2 py-1 border rounded"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Halaman berikutnya"
         >
-          {">"}
+          <ChevronRightIcon className="h-4 w-4" />
         </button>
         <button
-          onClick={() => table.setPageIndex(table.getPageCount() - 1)}
+          onClick={() => table.setPageIndex(visiblePageCount - 1)}
           disabled={!table.getCanNextPage()}
-          className="px-2 py-1 border rounded"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+          aria-label="Halaman terakhir"
         >
-          {">>"}
+          <ChevronsRightIcon className="h-4 w-4" />
         </button>
       </div>
-    </div>
+    </section>
   );
 }

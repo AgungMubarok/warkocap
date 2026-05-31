@@ -1,107 +1,163 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  collection,
   addDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  where,
-  Timestamp,
-  doc,
-  updateDoc,
+  collection,
   deleteDoc,
+  doc,
+  serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import withAuth from "@/hooks/withAuth";
-import Swal from "sweetalert2";
-import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-  ColumnDef,
-  PaginationState,
-} from "@tanstack/react-table";
 import Modal from "react-modal";
+import Swal from "sweetalert2";
+import withAuth from "@/hooks/withAuth";
+import { db } from "@/lib/firebase";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronsLeftIcon,
+  ChevronsRightIcon,
+} from "@/components/ui/icons";
+import {
+  formatCurrency,
+  formatCurrencyInput,
+  formatDateForInput,
+  getCalendarRange,
+  normalizeCurrencyInput,
+  parseCurrencyInput,
+} from "@/lib/date-range";
+import { getExpensesByRange, invalidateExpenseCaches } from "@/lib/firebase-data";
+import type { ExpenseRecord } from "@/lib/types";
 
-// Definisikan tipe data untuk pengeluaran
-interface Expense {
-  id: string;
-  description: string;
-  amount: number;
-  timestamp: Timestamp;
-}
-
-// Atur elemen root untuk modal
 Modal.setAppElement("body");
 
+const PAGE_SIZE = 6;
+
 function PengeluaranPage() {
-  // State untuk form
+  const today = useMemo(() => new Date(), []);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
-
-  // State untuk tabel
-  const [dailyExpenses, setDailyExpenses] = useState<Expense[]>([]);
-  const [{ pageIndex, pageSize }, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: 10,
-  });
-
-  // State untuk modal edit
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+  const [isLoadingExpenses, setIsLoadingExpenses] = useState(true);
+  const [fromDate, setFromDate] = useState(today);
+  const [toDate, setToDate] = useState(today);
+  const [pageIndex, setPageIndex] = useState(0);
   const [modalIsOpen, setModalIsOpen] = useState(false);
-  const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
+  const [selectedExpense, setSelectedExpense] = useState<ExpenseRecord | null>(null);
+  const [selectedExpenseAmountInput, setSelectedExpenseAmountInput] = useState("");
 
-  // Mengambil data pengeluaran HARI INI secara real-time
+  const loadExpenses = useCallback(async () => {
+    setIsLoadingExpenses(true);
+
+    try {
+      const { start, end } = getCalendarRange(fromDate, toDate);
+      const nextExpenses = await getExpensesByRange(start, end);
+      setExpenses(nextExpenses);
+    } finally {
+      setIsLoadingExpenses(false);
+    }
+  }, [fromDate, toDate]);
+
   useEffect(() => {
-    // Tentukan rentang waktu "hari bisnis" (dari jam 4 pagi ini sampai jam 4 pagi besok)
-    const now = new Date();
-    const businessDate = new Date(now.getTime() - 4 * 60 * 60 * 1000);
+    let isActive = true;
 
-    const startOfDay = new Date(
-      businessDate.getFullYear(),
-      businessDate.getMonth(),
-      businessDate.getDate(),
-      4,
-      0,
-      0
-    );
-    const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+    const syncExpenses = async () => {
+      try {
+        const { start, end } = getCalendarRange(fromDate, toDate);
+        const nextExpenses = await getExpensesByRange(start, end);
 
-    const q = query(
-      collection(db, "expenses"),
-      where("timestamp", ">=", startOfDay),
-      where("timestamp", "<", endOfDay),
-      orderBy("timestamp", "desc")
-    );
+        if (!isActive) {
+          return;
+        }
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const expensesData = snapshot.docs.map(
-        (doc) => ({ id: doc.id, ...doc.data() } as Expense)
-      );
-      setDailyExpenses(expensesData);
-    });
-    return () => unsubscribe();
-  }, []);
+        setExpenses(nextExpenses);
+      } finally {
+        if (isActive) {
+          setIsLoadingExpenses(false);
+        }
+      }
+    };
 
-  // Fungsi untuk menambah pengeluaran
+    void syncExpenses();
+
+    return () => {
+      isActive = false;
+    };
+  }, [fromDate, toDate]);
+
+  const totalPages = expenses.length === 0 ? 1 : Math.ceil(expenses.length / PAGE_SIZE);
+  const currentPageIndex = Math.min(pageIndex, totalPages - 1);
+
+  const paginatedExpenses = useMemo(() => {
+    const startIndex = currentPageIndex * PAGE_SIZE;
+    return expenses.slice(startIndex, startIndex + PAGE_SIZE);
+  }, [currentPageIndex, expenses]);
+
+  const totalExpenseAmount = useMemo(
+    () => expenses.reduce((sum, expense) => sum + expense.amount, 0),
+    [expenses]
+  );
+
+  const handleFromDateChange = (value: string) => {
+    const nextDate = new Date(value.replace(/-/g, "/"));
+
+    if (Number.isNaN(nextDate.getTime())) {
+      return;
+    }
+
+    setFromDate(nextDate);
+    if (nextDate > toDate) {
+      setToDate(nextDate);
+    }
+    setIsLoadingExpenses(true);
+    setPageIndex(0);
+  };
+
+  const handleToDateChange = (value: string) => {
+    const nextDate = new Date(value.replace(/-/g, "/"));
+
+    if (Number.isNaN(nextDate.getTime())) {
+      return;
+    }
+
+    setToDate(nextDate);
+    if (nextDate < fromDate) {
+      setFromDate(nextDate);
+    }
+    setIsLoadingExpenses(true);
+    setPageIndex(0);
+  };
+
+  const handlePageChange = (nextPage: number) => {
+    setPageIndex(Math.max(0, Math.min(totalPages - 1, nextPage)));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!description || !amount) {
+
+    const amountValue = parseCurrencyInput(amount);
+
+    if (!description || amountValue <= 0) {
       return Swal.fire({
         icon: "warning",
         title: "Oops...",
         text: "Harap isi semua kolom!",
       });
     }
+
     setLoading(true);
+
     try {
       await addDoc(collection(db, "expenses"), {
         description,
-        amount: Number(amount),
-        timestamp: new Date(),
+        amount: amountValue,
+        timestamp: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
+      invalidateExpenseCaches();
+      await loadExpenses();
       setDescription("");
       setAmount("");
       Swal.fire({
@@ -109,7 +165,7 @@ function PengeluaranPage() {
         title: "Berhasil!",
         text: "Pengeluaran berhasil dicatat.",
       });
-    } catch (error) {
+    } catch {
       Swal.fire({
         icon: "error",
         title: "Gagal!",
@@ -120,30 +176,48 @@ function PengeluaranPage() {
     }
   };
 
-  // Fungsi untuk Edit & Hapus
-  const openEditModal = (expense: Expense) => {
+  const openEditModal = (expense: ExpenseRecord) => {
     setSelectedExpense(expense);
+    setSelectedExpenseAmountInput(expense.amount > 0 ? `${expense.amount}` : "");
     setModalIsOpen(true);
   };
+
   const closeEditModal = () => {
     setModalIsOpen(false);
     setSelectedExpense(null);
+    setSelectedExpenseAmountInput("");
   };
+
   const handleUpdateExpense = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedExpense) return;
+
+    if (!selectedExpense) {
+      return;
+    }
+
+    const amountValue = parseCurrencyInput(selectedExpenseAmountInput);
+
+    if (!selectedExpense.description || amountValue <= 0) {
+      Swal.fire("Oops...", "Keterangan dan jumlah wajib diisi.", "warning");
+      return;
+    }
+
     try {
       const expenseRef = doc(db, "expenses", selectedExpense.id);
       await updateDoc(expenseRef, {
         description: selectedExpense.description,
-        amount: Number(selectedExpense.amount),
+        amount: amountValue,
+        updatedAt: serverTimestamp(),
       });
-      Swal.fire("Sukses!", "Pengeluaran berhasil diperbarui.", "success");
+      invalidateExpenseCaches();
+      await loadExpenses();
       closeEditModal();
-    } catch (error) {
+      Swal.fire("Sukses!", "Pengeluaran berhasil diperbarui.", "success");
+    } catch {
       Swal.fire("Gagal!", "Gagal memperbarui pengeluaran.", "error");
     }
   };
+
   const handleDeleteExpense = (expenseId: string) => {
     Swal.fire({
       title: "Apakah Anda yakin?",
@@ -157,90 +231,54 @@ function PengeluaranPage() {
       if (result.isConfirmed) {
         try {
           await deleteDoc(doc(db, "expenses", expenseId));
+          invalidateExpenseCaches();
+          await loadExpenses();
           Swal.fire("Terhapus!", "Pengeluaran berhasil dihapus.", "success");
-        } catch (error) {
+        } catch {
           Swal.fire("Gagal!", "Gagal menghapus pengeluaran.", "error");
         }
       }
     });
   };
 
-  // Konfigurasi tabel pengeluaran
-  const columns = useMemo<ColumnDef<Expense>[]>(
-    () => [
-      {
-        accessorKey: "timestamp",
-        header: "Waktu",
-        cell: (info) =>
-          info
-            .getValue<Timestamp>()
-            .toDate()
-            .toLocaleTimeString("id-ID", {
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-      },
-      { accessorKey: "description", header: "Keterangan" },
-      {
-        accessorKey: "amount",
-        header: "Jumlah",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
-      },
-      {
-        id: "aksi",
-        header: "Aksi",
-        cell: ({ row }) => (
-          <div className="flex space-x-2">
-            <button
-              onClick={() => openEditModal(row.original)}
-              className="text-yellow-600 hover:underline"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => handleDeleteExpense(row.original.id)}
-              className="text-red-600 hover:underline"
-            >
-              Hapus
-            </button>
-          </div>
-        ),
-      },
-    ],
-    []
-  );
-
-  const paginatedData = useMemo(() => {
-    const start = pageIndex * pageSize;
-    const end = start + pageSize;
-    return dailyExpenses.slice(start, end);
-  }, [dailyExpenses, pageIndex, pageSize]);
-
-  const table = useReactTable({
-    data: paginatedData,
-    columns,
-    pageCount: Math.ceil(dailyExpenses.length / pageSize),
-    state: { pagination: { pageIndex, pageSize } },
-    onPaginationChange: setPagination,
-    getCoreRowModel: getCoreRowModel(),
-    manualPagination: true,
-  });
-
   return (
-    <div className="container mx-auto p-8">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Kolom Kiri: Form Tambah Pengeluaran */}
-        <div className="lg:col-span-1">
-          <h1 className="text-3xl font-bold mb-6">Catat Pengeluaran</h1>
-          <form
-            onSubmit={handleSubmit}
-            className="space-y-4 bg-white p-8 rounded-lg shadow-md"
-          >
+    <section className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-4 md:px-6 md:py-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 px-5 py-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <h1 className="text-2xl font-bold text-slate-900">Pengeluaran</h1>
+        </div>
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 px-5 py-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Catatan</p>
+          <p className="mt-2 text-2xl font-bold text-slate-900">{expenses.length}</p>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-[1.5rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Total pengeluaran pada rentang ini</p>
+          <p className="mt-2 text-3xl font-bold text-slate-900">
+            {formatCurrency(totalExpenseAmount)}
+          </p>
+        </div>
+        <div className="rounded-[1.5rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Rentang aktif</p>
+          <p className="mt-2 text-lg font-bold text-slate-900">
+            {formatDateForInput(fromDate)} s/d {formatDateForInput(toDate)}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.4fr)]">
+        <form
+          onSubmit={handleSubmit}
+          className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6"
+        >
+          <div className="mb-6">
+            <h2 className="text-xl font-bold text-slate-900">Tambah Pengeluaran</h2>
+          </div>
+          <div className="space-y-4">
             <div>
-              <label
-                htmlFor="description"
-                className="block text-sm font-medium text-gray-700"
-              >
+              <label htmlFor="description" className="block text-sm font-medium text-slate-700">
                 Keterangan
               </label>
               <input
@@ -248,134 +286,176 @@ function PengeluaranPage() {
                 id="description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g., Bayar Listrik"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                placeholder="Contoh: Bayar listrik"
+                className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm outline-none transition focus:border-orange-400 focus:bg-white"
                 required
               />
             </div>
             <div>
-              <label
-                htmlFor="amount"
-                className="block text-sm font-medium text-gray-700"
-              >
+              <label htmlFor="amount" className="block text-sm font-medium text-slate-700">
                 Jumlah (Rp)
               </label>
               <input
-                type="number"
+                type="text"
                 id="amount"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="e.g., 500000"
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                inputMode="numeric"
+                value={formatCurrencyInput(amount)}
+                onChange={(e) => setAmount(normalizeCurrencyInput(e.target.value))}
+                placeholder="Rp 0"
+                className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm outline-none transition focus:border-orange-400 focus:bg-white"
                 required
               />
             </div>
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 px-4 bg-blue-600 text-white font-semibold rounded-md shadow-sm hover:bg-blue-700 disabled:bg-gray-400"
+              className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {loading ? "Menyimpan..." : "Simpan Pengeluaran"}
             </button>
-          </form>
-        </div>
-
-        {/* Kolom Kanan: Daftar Pengeluaran Hari Ini */}
-        <div className="lg:col-span-2">
-          <h2 className="text-2xl font-bold mb-6">
-            Riwayat Pengeluaran Hari Ini
-          </h2>
-          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-            <table className="w-full text-sm text-left text-gray-700">
-              <thead className="text-xs text-gray-700 uppercase bg-gray-100">
-                {table.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id}>
-                    {hg.headers.map((h) => (
-                      <th key={h.id} className="px-6 py-3">
-                        {flexRender(h.column.columnDef.header, h.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {table.getRowModel().rows.length > 0 ? (
-                  table.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className="border-b hover:bg-gray-50">
-                      {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="px-6 py-4">
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext()
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={columns.length} className="text-center p-6">
-                      Belum ada pengeluaran hari ini.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
           </div>
-          <div className="flex items-center justify-center gap-2 mt-4">
+        </form>
+
+        <div className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+          <div className="mb-5 flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-slate-900">Riwayat Pengeluaran</h2>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label htmlFor="fromDate" className="block text-sm font-medium text-slate-700">
+                  Dari tanggal
+                </label>
+                <input
+                  id="fromDate"
+                  type="date"
+                  value={formatDateForInput(fromDate)}
+                  onChange={(e) => handleFromDateChange(e.target.value)}
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm outline-none transition focus:border-orange-400 focus:bg-white"
+                />
+              </div>
+              <div>
+                <label htmlFor="toDate" className="block text-sm font-medium text-slate-700">
+                  Sampai tanggal
+                </label>
+                <input
+                  id="toDate"
+                  type="date"
+                  value={formatDateForInput(toDate)}
+                  onChange={(e) => handleToDateChange(e.target.value)}
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm outline-none transition focus:border-orange-400 focus:bg-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {isLoadingExpenses ? (
+              <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                Memuat pengeluaran...
+              </div>
+            ) : paginatedExpenses.length > 0 ? (
+              paginatedExpenses.map((expense) => (
+                <article
+                  key={expense.id}
+                  className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                        {expense.timestamp
+                          ? expense.timestamp.toLocaleDateString("id-ID", {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                            })
+                          : "Tanpa tanggal"}
+                      </p>
+                      <h3 className="mt-2 text-base font-semibold text-slate-900">
+                        {expense.description}
+                      </h3>
+                    </div>
+                    <p className="text-base font-bold text-slate-900">
+                      {formatCurrency(expense.amount)}
+                    </p>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => openEditModal(expense)}
+                      className="rounded-full bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-700 transition hover:bg-amber-200"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => handleDeleteExpense(expense.id)}
+                      className="rounded-full bg-rose-100 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-200"
+                    >
+                      Hapus
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                Belum ada pengeluaran pada rentang tanggal ini.
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-sm text-slate-600">
             <button
-              onClick={() => table.setPageIndex(0)}
-              disabled={!table.getCanPreviousPage()}
-              className="p-2 border rounded"
+              onClick={() => handlePageChange(0)}
+              disabled={currentPageIndex === 0}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Halaman pertama"
             >
-              {"<<"}
+              <ChevronsLeftIcon className="h-4 w-4" />
             </button>
             <button
-              onClick={() => table.previousPage()}
-              disabled={!table.getCanPreviousPage()}
-              className="p-2 border rounded"
+              onClick={() => handlePageChange(currentPageIndex - 1)}
+              disabled={currentPageIndex === 0}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Halaman sebelumnya"
             >
-              {"<"}
+              <ChevronLeftIcon className="h-4 w-4" />
             </button>
-            <span className="gap-1">
-              Hal <strong>{pageIndex + 1}</strong> dari{" "}
-              <strong>{table.getPageCount()}</strong>
+            <span className="flex items-center gap-1 rounded-xl bg-slate-100 px-4 py-2">
+              <span>Halaman</span>
+              <strong>
+                {currentPageIndex + 1} dari {totalPages}
+              </strong>
             </span>
             <button
-              onClick={() => table.nextPage()}
-              disabled={!table.getCanNextPage()}
-              className="p-2 border rounded"
+              onClick={() => handlePageChange(currentPageIndex + 1)}
+              disabled={currentPageIndex >= totalPages - 1}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Halaman berikutnya"
             >
-              {">"}
+              <ChevronRightIcon className="h-4 w-4" />
             </button>
             <button
-              onClick={() => table.setPageIndex(table.getPageCount() - 1)}
-              disabled={!table.getCanNextPage()}
-              className="p-2 border rounded"
+              onClick={() => handlePageChange(totalPages - 1)}
+              disabled={currentPageIndex >= totalPages - 1}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Halaman terakhir"
             >
-              {">>"}
+              <ChevronsRightIcon className="h-4 w-4" />
             </button>
           </div>
         </div>
       </div>
 
-      {/* Modal untuk Edit Pengeluaran */}
       <Modal
         isOpen={modalIsOpen}
         onRequestClose={closeEditModal}
         contentLabel="Edit Pengeluaran"
-        className="bg-white rounded-lg shadow-xl p-8 max-w-lg mx-auto mt-20"
-        overlayClassName="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center"
+        className="app-modal-content w-full max-w-xl p-6 md:p-8"
+        overlayClassName="app-modal-overlay"
       >
         {selectedExpense && (
           <form onSubmit={handleUpdateExpense}>
-            <h2 className="text-2xl font-bold mb-6">Edit Pengeluaran</h2>
+            <h2 className="mb-6 text-2xl font-bold text-slate-900">Edit Pengeluaran</h2>
             <div className="space-y-4">
               <div>
-                <label
-                  htmlFor="editDescription"
-                  className="block text-sm font-medium text-gray-700"
-                >
+                <label htmlFor="editDescription" className="block text-sm font-medium text-slate-700">
                   Keterangan
                 </label>
                 <input
@@ -388,41 +468,37 @@ function PengeluaranPage() {
                       description: e.target.value,
                     })
                   }
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
                 />
               </div>
               <div>
-                <label
-                  htmlFor="editAmount"
-                  className="block text-sm font-medium text-gray-700"
-                >
+                <label htmlFor="editAmount" className="block text-sm font-medium text-slate-700">
                   Jumlah (Rp)
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   id="editAmount"
-                  value={selectedExpense.amount}
+                  inputMode="numeric"
+                  value={formatCurrencyInput(selectedExpenseAmountInput)}
                   onChange={(e) =>
-                    setSelectedExpense({
-                      ...selectedExpense,
-                      amount: Number(e.target.value),
-                    })
+                    setSelectedExpenseAmountInput(normalizeCurrencyInput(e.target.value))
                   }
-                  className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md"
+                  className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+                  placeholder="Rp 0"
                 />
               </div>
             </div>
-            <div className="mt-6 flex justify-end space-x-4">
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
               <button
                 type="button"
                 onClick={closeEditModal}
-                className="bg-gray-200 text-gray-800 px-4 py-2 rounded-md"
+                className="rounded-2xl bg-slate-100 px-4 py-3 text-slate-700"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="bg-blue-600 text-white px-4 py-2 rounded-md"
+                className="rounded-2xl bg-slate-950 px-4 py-3 text-white"
               >
                 Simpan Perubahan
               </button>
@@ -430,7 +506,7 @@ function PengeluaranPage() {
           </form>
         )}
       </Modal>
-    </div>
+    </section>
   );
 }
 

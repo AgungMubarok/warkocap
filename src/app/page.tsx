@@ -1,17 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import Cart, { CartItem } from "@/components/Cart"; // <-- Import CartItem
+import Cart from "@/components/Cart";
 import withAuth from "@/hooks/withAuth";
 import ProductDataTable from "@/components/ProductDataTable";
-
-// Definisikan tipe data produk yang lengkap
-interface Product {
-  id: string;
-  namaProduk: string;
-  hargaJual: number;
-  hargaModal: number;
-}
+import { formatCurrency } from "@/lib/date-range";
+import type { CartItem, Product } from "@/lib/types";
 
 function HomePage() {
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -38,13 +32,35 @@ function HomePage() {
     setCart(newCart);
   };
 
+  const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const totalValue = cart.reduce(
+    (sum, item) => sum + item.hargaJual * item.quantity,
+    0
+  );
+
   return (
-    <div className="flex flex-col md:flex-row">
-      <div className="w-full md:w-2/3">
-        <ProductDataTable onAddToCart={handleAddToCart} />
+    <section className="space-y-5">
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,12rem))]">
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <h1 className="text-2xl font-bold text-slate-900">Kasir</h1>
+        </div>
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Item</p>
+          <p className="mt-2 text-3xl font-bold text-slate-900">{totalItems}</p>
+        </div>
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <p className="text-sm text-slate-500">Total</p>
+          <p className="mt-2 text-3xl font-bold text-slate-900">{formatCurrency(totalValue)}</p>
+        </div>
       </div>
-      <Cart cart={cart} onUpdateCart={handleUpdateCart} />
-    </div>
+
+      <div className="flex flex-col gap-5 xl:flex-row xl:items-start">
+        <div className="min-w-0 flex-1">
+          <ProductDataTable cart={cart} onAddToCart={handleAddToCart} />
+        </div>
+        <Cart cart={cart} onUpdateCart={handleUpdateCart} />
+      </div>
+    </section>
   );
 }
 

@@ -1,19 +1,24 @@
 "use client";
 
-import { useState } from "react";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { useEffect, useRef, useState } from "react";
+import {
+  collection,
+  doc,
+  runTransaction,
+  serverTimestamp,
+} from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import Swal from "sweetalert2";
 import Modal from "react-modal";
+import { formatCurrency } from "@/lib/date-range";
+import {
+  invalidateTransactionCaches,
+  updateProductStocksInCache,
+} from "@/lib/firebase-data";
+import { ChevronDownIcon, ChevronUpIcon } from "@/components/ui/icons";
+import type { CartItem } from "@/lib/types";
 
-// Definisikan tipe data untuk item di keranjang
-export interface CartItem {
-  id: string;
-  namaProduk: string;
-  hargaJual: number;
-  hargaModal: number;
-  quantity: number;
-}
+export type { CartItem };
 
 interface CartProps {
   cart: CartItem[];
@@ -24,6 +29,31 @@ Modal.setAppElement("body");
 
 export default function Cart({ cart, onUpdateCart }: CartProps) {
   const [modalIsOpen, setModalIsOpen] = useState(false);
+  const [isSummaryInView, setIsSummaryInView] = useState(true);
+  const summaryRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const summaryElement = summaryRef.current;
+
+    if (!summaryElement || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsSummaryInView(entry.isIntersecting);
+      },
+      {
+        threshold: 0,
+      }
+    );
+
+    observer.observe(summaryElement);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
 
   const handleQuantityChange = (productId: string, amount: number) => {
     const newCart = cart.map((item) => {
@@ -57,7 +87,7 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
       title: "Konfirmasi Pembayaran",
       html: `
         <p>Metode: <b>${paymentMethod.toUpperCase()}</b></p>
-        <p>Total Belanja: <b>Rp ${totalBelanja.toLocaleString("id-ID")}</b></p>
+        <p>Total Belanja: <b>${formatCurrency(totalBelanja)}</b></p>
         <p>Yakin ingin melanjutkan transaksi ini?</p>
       `,
       icon: "question",
@@ -93,7 +123,40 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
     };
 
     try {
-      await addDoc(collection(db, "transactions"), transactionData);
+      const stockUpdates: Array<{ productId: string; stok: number | null }> = [];
+
+      await runTransaction(db, async (transaction) => {
+        for (const item of cart) {
+          const productRef = doc(db, "products", item.id);
+          const productSnapshot = await transaction.get(productRef);
+          const productData = productSnapshot.data();
+
+          if (!productSnapshot.exists()) {
+            throw new Error(`Produk ${item.namaProduk} tidak ditemukan.`);
+          }
+
+          if (typeof productData?.stok === "number") {
+            const currentStock = Number(productData.stok);
+
+            if (currentStock < item.quantity) {
+              throw new Error(`Stok ${item.namaProduk} tidak cukup.`);
+            }
+
+            const nextStock = currentStock - item.quantity;
+            transaction.update(productRef, {
+              stok: nextStock,
+              updatedAt: serverTimestamp(),
+            });
+            stockUpdates.push({ productId: item.id, stok: nextStock });
+          }
+        }
+
+        const transactionRef = doc(collection(db, "transactions"));
+        transaction.set(transactionRef, transactionData);
+      });
+
+      updateProductStocksInCache(stockUpdates);
+      invalidateTransactionCaches();
       Swal.fire({
         icon: "success",
         title: "Berhasil!",
@@ -116,96 +179,142 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
     (sum, item) => sum + item.hargaJual * item.quantity,
     0
   );
+  const showFloatingCheckout = cart.length > 0 && !isSummaryInView;
 
   return (
     <>
-      <div className="w-full md:w-1/3 p-4 bg-gray-50 border-l flex flex-col">
-        <h2 className="text-2xl font-bold mb-4">Keranjang</h2>
-        <div className="flex-grow overflow-y-auto mb-4">
+      <aside className="w-full rounded-[2rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6 xl:sticky xl:top-24 xl:w-[24rem]">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 md:text-2xl">Keranjang</h2>
+          </div>
+          <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
+            {cart.length} item
+          </span>
+        </div>
+        <div className="mb-4 max-h-[52vh] space-y-3 overflow-y-auto pr-1 md:max-h-[68vh]">
           {cart.length === 0 ? (
-            <p className="text-gray-500 text-center mt-10">
+            <p className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
               Keranjang masih kosong.
             </p>
           ) : (
             cart.map((item) => (
               <div
                 key={item.id}
-                className="flex items-center mb-3 p-2 bg-white rounded-md shadow-sm"
+                className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
               >
-                <div className="flex-grow">
-                  <p className="font-semibold">{item.namaProduk}</p>
-                  <p className="text-sm text-gray-600">
-                    Rp {item.hargaJual.toLocaleString("id-ID")}
-                  </p>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-grow">
+                    <p className="font-semibold text-slate-900">{item.namaProduk}</p>
+                    <p className="text-sm text-slate-500">
+                      {formatCurrency(item.hargaJual)} per item
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Subtotal {formatCurrency(item.hargaJual * item.quantity)}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteItem(item.id)}
+                    className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700 transition hover:bg-rose-200"
+                  >
+                    Hapus
+                  </button>
                 </div>
-                <div className="flex items-center space-x-2">
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
+                    Jumlah
+                  </span>
+                  <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleQuantityChange(item.id, -1)}
-                    className="bg-gray-200 w-6 h-6 rounded"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-700 shadow-sm"
+                    aria-label={`Kurangi jumlah ${item.namaProduk}`}
                   >
-                    -
+                    <ChevronDownIcon className="h-4 w-4 rotate-90" />
                   </button>
-                  <span>{item.quantity}</span>
+                  <span className="min-w-6 text-center font-semibold text-slate-900">
+                    {item.quantity}
+                  </span>
                   <button
                     onClick={() => handleQuantityChange(item.id, 1)}
-                    className="bg-gray-200 w-6 h-6 rounded"
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white text-slate-700 shadow-sm"
+                    aria-label={`Tambah jumlah ${item.namaProduk}`}
                   >
-                    +
+                    <ChevronUpIcon className="h-4 w-4 rotate-90" />
                   </button>
+                  </div>
                 </div>
-                <button
-                  onClick={() => handleDeleteItem(item.id)}
-                  className="ml-4 text-red-500 hover:text-red-700"
-                >
-                  &#x1F5D1; {/* Ikon tong sampah */}
-                </button>
               </div>
             ))
           )}
         </div>
-        <div className="border-t pt-4">
-          <div className="flex justify-between items-center text-xl font-bold mb-4">
-            <span>Total:</span>
-            <span>Rp {total.toLocaleString("id-ID")}</span>
+        <div ref={summaryRef} className="rounded-[1.5rem] bg-slate-950 p-4 text-white">
+          <div className="mb-4 flex items-center justify-between text-lg font-bold md:text-xl">
+            <span>Total</span>
+            <span>{formatCurrency(total)}</span>
           </div>
           <button
             onClick={openModal}
             disabled={cart.length === 0}
-            className="w-full bg-green-500 text-white py-3 rounded-md disabled:bg-gray-400 hover:bg-green-600 transition-colors"
+            className="w-full rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             Pilih Metode Pembayaran
           </button>
         </div>
-      </div>
+      </aside>
 
-      {/* Modal untuk Metode Pembayaran */}
+      {showFloatingCheckout && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-40 flex justify-center px-4">
+          <div className="pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-[1.5rem] border border-white/70 bg-white/95 p-3 shadow-[0_24px_60px_rgba(15,23,42,0.22)] backdrop-blur">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                Total Belanja
+              </p>
+              <p className="mt-1 truncate text-lg font-bold text-slate-900">
+                {formatCurrency(total)}
+              </p>
+              <p className="text-xs text-slate-500">{cart.length} item di keranjang</p>
+            </div>
+            <button
+              onClick={openModal}
+              className="shrink-0 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+            >
+              Checkout
+            </button>
+          </div>
+        </div>
+      )}
+
       <Modal
         isOpen={modalIsOpen}
         onRequestClose={closeModal}
         contentLabel="Metode Pembayaran"
-        className="bg-white rounded-lg shadow-xl p-8 max-w-sm mx-auto mt-20"
-        overlayClassName="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center"
+        className="app-modal-content w-full max-w-md p-6 md:p-8"
+        overlayClassName="app-modal-overlay"
       >
-        <h2 className="text-2xl font-bold mb-6 text-center">
+        <h2 className="mb-2 text-center text-2xl font-bold text-slate-900">
           Pilih Pembayaran
         </h2>
+        <p className="mb-6 text-center text-sm text-slate-500">
+          Total transaksi {formatCurrency(total)}
+        </p>
         <div className="space-y-4">
           <button
             onClick={() => handleCheckout("cash")}
-            className="w-full py-3 px-4 bg-blue-600 text-white font-semibold rounded-md shadow-sm hover:bg-blue-700"
+            className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-semibold text-white shadow-sm transition hover:bg-slate-800"
           >
             Bayar Cash
           </button>
           <button
             onClick={() => handleCheckout("qris")}
-            className="w-full py-3 px-4 bg-purple-600 text-white font-semibold rounded-md shadow-sm hover:bg-purple-700"
+            className="w-full rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 shadow-sm transition hover:bg-amber-300"
           >
             Bayar QRIS
           </button>
         </div>
         <button
           onClick={closeModal}
-          className="w-full mt-6 text-center text-gray-600 hover:underline"
+          className="mt-6 w-full text-center text-sm font-medium text-slate-500 hover:underline"
         >
           Batal
         </button>

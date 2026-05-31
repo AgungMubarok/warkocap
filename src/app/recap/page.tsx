@@ -1,398 +1,386 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { collection, getDocs, Timestamp } from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import withAuth from "@/hooks/withAuth";
-import {
-  useReactTable,
-  getCoreRowModel,
-  flexRender,
-  ColumnDef,
-  PaginationState,
-} from "@tanstack/react-table";
+import { useEffect, useMemo, useState } from "react";
 import Swal from "sweetalert2";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
+import withAuth from "@/hooks/withAuth";
+import {
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  ChevronsLeftIcon,
+  ChevronsRightIcon,
+} from "@/components/ui/icons";
+import {
+  formatCurrency,
+  formatDateForInput,
+  getCalendarRange,
+  getBusinessDayRange,
+  getMonthRange,
+  parseDateInput,
+  getYearRange,
+} from "@/lib/date-range";
+import { getExpensesByRange, getTransactionsByRange } from "@/lib/firebase-data";
+import type { ExpenseRecord, TransactionRecord } from "@/lib/types";
 
-// --- INTERFACE DATA ---
-interface TransactionItem {
-  namaProduk: string;
-  hargaSatuan: number;
-  hargaModal: number;
-  quantity: number;
-}
-interface Transaction {
-  id: string;
-  totalBelanja: number;
-  totalModal: number;
-  timestamp: Timestamp;
-  items: TransactionItem[];
-  paymentMethod: "cash" | "qris";
-}
+const PAGE_SIZE = {
+  transactions: 5,
+  products: 8,
+  expenses: 5,
+};
+
+type RecapFilter =
+  | "daily"
+  | "monthly"
+  | "yearly"
+  | "specificDate"
+  | "dateRange";
+type RecapView = "total" | "ringkasan";
+type ActivePanel =
+  | "latestTransactions"
+  | "topProducts"
+  | "transactions"
+  | "products"
+  | "expenses";
+
 interface AggregatedProduct {
   namaProduk: string;
   totalQuantity: number;
   totalRevenue: number;
 }
-interface Expense {
-  id: string;
-  description: string;
-  amount: number;
-  timestamp: Timestamp;
+
+function SummaryCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "slate" | "emerald" | "amber" | "blue" | "rose" | "violet";
+}) {
+  const tones: Record<typeof tone, string> = {
+    slate: "bg-white text-slate-900",
+    emerald: "bg-emerald-50 text-emerald-900",
+    amber: "bg-amber-50 text-amber-900",
+    blue: "bg-sky-50 text-sky-900",
+    rose: "bg-rose-50 text-rose-900",
+    violet: "bg-violet-50 text-violet-900",
+  };
+
+  return (
+    <div
+      className={`rounded-[1.5rem] border border-white/60 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur ${tones[tone]}`}
+    >
+      <p className="text-sm opacity-70">{label}</p>
+      <p className="mt-2 text-2xl font-bold md:text-3xl">{value}</p>
+    </div>
+  );
 }
 
-// --- FUNGSI BANTUAN ---
-const formatDateForInput = (date: Date) => {
-  if (!date || isNaN(date.getTime())) return "";
-  const year = date.getFullYear();
-  const month = (date.getMonth() + 1).toString().padStart(2, "0");
-  const day = date.getDate().toString().padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
+function PaginationControls({
+  pageIndex,
+  totalPages,
+  onChange,
+}: {
+  pageIndex: number;
+  totalPages: number;
+  onChange: (nextPage: number) => void;
+}) {
+  return (
+    <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-sm text-slate-600">
+      <button
+        onClick={() => onChange(0)}
+        disabled={pageIndex === 0}
+        className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Halaman pertama"
+      >
+        <ChevronsLeftIcon className="h-4 w-4" />
+      </button>
+      <button
+        onClick={() => onChange(Math.max(0, pageIndex - 1))}
+        disabled={pageIndex === 0}
+        className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Halaman sebelumnya"
+      >
+        <ChevronLeftIcon className="h-4 w-4" />
+      </button>
+      <span className="flex items-center gap-1 rounded-xl bg-slate-100 px-4 py-2">
+        <span>Halaman</span>
+        <strong>
+          {pageIndex + 1} dari {totalPages}
+        </strong>
+      </span>
+      <button
+        onClick={() => onChange(Math.min(totalPages - 1, pageIndex + 1))}
+        disabled={pageIndex >= totalPages - 1}
+        className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Halaman berikutnya"
+      >
+        <ChevronRightIcon className="h-4 w-4" />
+      </button>
+      <button
+        onClick={() => onChange(totalPages - 1)}
+        disabled={pageIndex >= totalPages - 1}
+        className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 transition disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Halaman terakhir"
+      >
+        <ChevronsRightIcon className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
 
 function RecapPage() {
-  // --- STATE ---
-  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
-  const [allExpenses, setAllExpenses] = useState<Expense[]>([]);
-  const [filter, setFilter] = useState<"daily" | "monthly" | "yearly">("daily");
-  const [selectedDate, setSelectedDate] = useState(new Date());
-
-  // State untuk fitur collapse di tabel transaksi
+  const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+  const [filter, setFilter] = useState<RecapFilter>("daily");
+  const [specificDate, setSpecificDate] = useState(() => formatDateForInput(new Date()));
+  const [rangeStartDate, setRangeStartDate] = useState(() =>
+    formatDateForInput(new Date())
+  );
+  const [rangeEndDate, setRangeEndDate] = useState(() =>
+    formatDateForInput(new Date())
+  );
+  const [recapView, setRecapView] = useState<RecapView>("total");
+  const [activePanel, setActivePanel] = useState<ActivePanel>("latestTransactions");
+  const [isLoading, setIsLoading] = useState(true);
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
+  const [txPageIndex, setTxPageIndex] = useState(0);
+  const [productPageIndex, setProductPageIndex] = useState(0);
+  const [expensePageIndex, setExpensePageIndex] = useState(0);
 
-  const [{ pageIndex: txPageIndex, pageSize: txPageSize }, setTxPagination] =
-    useState<PaginationState>({ pageIndex: 0, pageSize: 5 });
-  const [
-    { pageIndex: productPageIndex, pageSize: productPageSize },
-    setProductPagination,
-  ] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 });
-  const [
-    { pageIndex: expensePageIndex, pageSize: expensePageSize },
-    setExpensePagination,
-  ] = useState<PaginationState>({ pageIndex: 0, pageSize: 5 });
-
-  // --- FETCH DATA ---
   useEffect(() => {
-    const fetchData = async () => {
-      const [transactionSnapshot, expenseSnapshot] = await Promise.all([
-        getDocs(collection(db, "transactions")),
-        getDocs(collection(db, "expenses")),
-      ]);
-      const transData = transactionSnapshot.docs.map(
-        (doc) => ({ id: doc.id, ...doc.data() } as Transaction)
-      );
-      const expenseData = expenseSnapshot.docs.map(
-        (doc) => ({ id: doc.id, ...doc.data() } as Expense)
-      );
-      setAllTransactions(transData);
-      setAllExpenses(expenseData);
-    };
-    fetchData();
-  }, []);
+    let isActive = true;
 
-  // --- LOGIKA UTAMA (FILTER & KALKULASI) ---
+    const syncRecap = async () => {
+      const range = (() => {
+        if (filter === "daily") {
+          return getBusinessDayRange(new Date());
+        }
+
+        if (filter === "monthly") {
+          return getMonthRange(new Date());
+        }
+
+        if (filter === "yearly") {
+          return getYearRange(new Date());
+        }
+
+        if (filter === "specificDate") {
+          const parsedDate = parseDateInput(specificDate);
+
+          return parsedDate ? getCalendarRange(parsedDate, parsedDate) : null;
+        }
+
+        const startDate = parseDateInput(rangeStartDate);
+        const endDate = parseDateInput(rangeEndDate);
+
+        if (!startDate || !endDate) {
+          return null;
+        }
+
+        const [fromDate, toDate] =
+          rangeStartDate <= rangeEndDate
+            ? [startDate, endDate]
+            : [endDate, startDate];
+
+        return getCalendarRange(fromDate, toDate);
+      })();
+
+      if (!range) {
+        if (isActive) {
+          setTransactions([]);
+          setExpenses([]);
+          setIsLoading(false);
+        }
+
+        return;
+      }
+
+      try {
+        const [nextTransactions, nextExpenses] = await Promise.all([
+          getTransactionsByRange(range.start, range.end),
+          getExpensesByRange(range.start, range.end),
+        ]);
+
+        if (!isActive) {
+          return;
+        }
+
+        setTransactions(nextTransactions);
+        setExpenses(nextExpenses);
+      } finally {
+        if (isActive) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void syncRecap();
+
+    return () => {
+      isActive = false;
+    };
+  }, [filter, specificDate, rangeStartDate, rangeEndDate]);
+
   const {
-    filteredTransactions,
-    filteredExpenses,
-    grossProfit,
+    grossRevenue,
     totalModal,
     totalExpenses,
     netProfit,
     cashTotal,
     qrisTotal,
+    totalItemsSold,
     aggregatedProducts,
   } = useMemo(() => {
-    const filterByPeriod = (date: Date) => {
-      const now = selectedDate;
-      if (filter === "daily") {
-        const businessDate = new Date(date.getTime() - 4 * 60 * 60 * 1000);
-        const selectedBusinessDate = new Date(
-          now.getTime() - 4 * 60 * 60 * 1000
-        );
-        return (
-          businessDate.toDateString() === selectedBusinessDate.toDateString()
-        );
-      }
-      if (filter === "monthly") {
-        return (
-          date.getMonth() === now.getMonth() &&
-          date.getFullYear() === now.getFullYear()
-        );
-      }
-      if (filter === "yearly") {
-        return date.getFullYear() === now.getFullYear();
-      }
-      return false;
-    };
-
-    const filteredTx = allTransactions.filter(
-      (t) => t.timestamp && filterByPeriod(t.timestamp.toDate())
-    );
-    const filteredEx = allExpenses.filter(
-      (e) => e.timestamp && filterByPeriod(e.timestamp.toDate())
-    );
-
-    const grossProfit = filteredTx.reduce((sum, t) => sum + t.totalBelanja, 0);
-    const totalModal = filteredTx.reduce(
-      (sum, t) => sum + (t.totalModal || 0),
+    const grossRevenueValue = transactions.reduce(
+      (sum, transaction) => sum + transaction.totalBelanja,
       0
     );
-    const totalExpenses = filteredEx.reduce((sum, e) => sum + e.amount, 0);
-    const netProfit = grossProfit - totalModal - totalExpenses;
-
-    const cashTotal = filteredTx
-      .filter((t) => t.paymentMethod === "cash")
-      .reduce((sum, t) => sum + t.totalBelanja, 0);
-    const qrisTotal = filteredTx
-      .filter((t) => t.paymentMethod === "qris")
-      .reduce((sum, t) => sum + t.totalBelanja, 0);
+    const totalModalValue = transactions.reduce(
+      (sum, transaction) => sum + (transaction.totalModal || 0),
+      0
+    );
+    const totalExpensesValue = expenses.reduce(
+      (sum, expense) => sum + expense.amount,
+      0
+    );
 
     const productSales = new Map<
       string,
       { totalQuantity: number; totalRevenue: number }
     >();
-    filteredTx.forEach((transaction) => {
-      if (transaction.items) {
-        transaction.items.forEach((item) => {
-          const current = productSales.get(item.namaProduk) || {
-            totalQuantity: 0,
-            totalRevenue: 0,
-          };
-          current.totalQuantity += item.quantity;
-          current.totalRevenue += item.quantity * item.hargaSatuan;
-          productSales.set(item.namaProduk, current);
-        });
-      }
+
+    transactions.forEach((transaction) => {
+      transaction.items.forEach((item) => {
+        const currentProduct = productSales.get(item.namaProduk) ?? {
+          totalQuantity: 0,
+          totalRevenue: 0,
+        };
+
+        currentProduct.totalQuantity += item.quantity;
+        currentProduct.totalRevenue += item.quantity * item.hargaSatuan;
+        productSales.set(item.namaProduk, currentProduct);
+      });
     });
-    const aggregatedProducts: AggregatedProduct[] = Array.from(
-      productSales.entries()
-    )
-      .map(([namaProduk, data]) => ({
-        namaProduk,
-        ...data,
-      }))
-      .sort((a, b) => b.totalQuantity - a.totalQuantity);
 
     return {
-      filteredTransactions: filteredTx,
-      filteredExpenses: filteredEx,
-      grossProfit,
-      totalModal,
-      totalExpenses,
-      netProfit,
-      cashTotal,
-      qrisTotal,
-      aggregatedProducts,
+      grossRevenue: grossRevenueValue,
+      totalModal: totalModalValue,
+      totalExpenses: totalExpensesValue,
+      netProfit: grossRevenueValue - totalModalValue - totalExpensesValue,
+      cashTotal: transactions
+        .filter((transaction) => transaction.paymentMethod === "cash")
+        .reduce((sum, transaction) => sum + transaction.totalBelanja, 0),
+      qrisTotal: transactions
+        .filter((transaction) => transaction.paymentMethod === "qris")
+        .reduce((sum, transaction) => sum + transaction.totalBelanja, 0),
+      totalItemsSold: transactions.reduce(
+        (sum, transaction) =>
+          sum + transaction.items.reduce((itemSum, item) => itemSum + item.quantity, 0),
+        0
+      ),
+      aggregatedProducts: Array.from(productSales.entries())
+        .map(([namaProduk, data]) => ({
+          namaProduk,
+          ...data,
+        }) satisfies AggregatedProduct)
+        .sort((left, right) => right.totalQuantity - left.totalQuantity),
     };
-  }, [allTransactions, allExpenses, filter, selectedDate]);
+  }, [expenses, transactions]);
 
-  // --- DATA PAGINASI UNTUK TABEL ---
-  const paginatedTxData = useMemo(() => {
-    const start = txPageIndex * txPageSize;
-    const end = start + txPageSize;
-    return filteredTransactions.slice(start, end);
-  }, [filteredTransactions, txPageIndex, txPageSize]);
+  const transactionPages =
+    transactions.length === 0
+      ? 1
+      : Math.ceil(transactions.length / PAGE_SIZE.transactions);
+  const productPages =
+    aggregatedProducts.length === 0
+      ? 1
+      : Math.ceil(aggregatedProducts.length / PAGE_SIZE.products);
+  const expensePages =
+    expenses.length === 0 ? 1 : Math.ceil(expenses.length / PAGE_SIZE.expenses);
+  const currentTxPageIndex = Math.min(txPageIndex, transactionPages - 1);
+  const currentProductPageIndex = Math.min(productPageIndex, productPages - 1);
+  const currentExpensePageIndex = Math.min(expensePageIndex, expensePages - 1);
 
-  const paginatedProductData = useMemo(() => {
-    const start = productPageIndex * productPageSize;
-    const end = start + productPageSize;
-    return aggregatedProducts.slice(start, end);
-  }, [aggregatedProducts, productPageIndex, productPageSize]);
+  const paginatedTransactions = useMemo(() => {
+    const startIndex = currentTxPageIndex * PAGE_SIZE.transactions;
+    return transactions.slice(startIndex, startIndex + PAGE_SIZE.transactions);
+  }, [currentTxPageIndex, transactions]);
 
-  const paginatedExpenseData = useMemo(() => {
-    const start = expensePageIndex * expensePageSize;
-    const end = start + expensePageSize;
-    return filteredExpenses.slice(start, end);
-  }, [filteredExpenses, expensePageIndex, expensePageSize]);
+  const paginatedProducts = useMemo(() => {
+    const startIndex = currentProductPageIndex * PAGE_SIZE.products;
+    return aggregatedProducts.slice(startIndex, startIndex + PAGE_SIZE.products);
+  }, [aggregatedProducts, currentProductPageIndex]);
 
-  // --- KONFIGURASI TABEL ---
-  const txColumns = useMemo<ColumnDef<Transaction>[]>(
-    () => [
-      {
-        accessorKey: "timestamp",
-        header: "Waktu",
-        cell: (info) =>
-          info
-            .getValue<Timestamp>()
-            .toDate()
-            .toLocaleString("id-ID", {
-              day: "2-digit",
-              month: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-      },
-      {
-        accessorKey: "paymentMethod",
-        header: "Metode",
-        cell: (info) => (
-          <span
-            className={`px-2 py-1 text-xs font-semibold rounded-full ${
-              info.getValue() === "cash"
-                ? "bg-blue-200 text-blue-800"
-                : info.getValue() === "qris"
-                ? "bg-purple-200 text-purple-800"
-                : "bg-yellow-200 text-yellow-800"
-            }`}
-          >
-            {String(info.getValue()).toUpperCase()}
-          </span>
-        ),
-      },
-      {
-        accessorKey: "items",
-        header: "Detail Item",
-        cell: ({ row }) => {
-          const items = row.original.items || [];
-          const isExpanded = expandedRows[row.original.id];
-          const canCollapse = items.length > 1;
+  const paginatedExpenses = useMemo(() => {
+    const startIndex = currentExpensePageIndex * PAGE_SIZE.expenses;
+    return expenses.slice(startIndex, startIndex + PAGE_SIZE.expenses);
+  }, [currentExpensePageIndex, expenses]);
 
-          if (items.length === 0) return "N/A";
-
-          return (
-            <div>
-              {isExpanded ? (
-                <ul className="list-disc list-inside text-xs space-y-1">
-                  {items.map((item, i) => (
-                    <li key={i}>
-                      {item.namaProduk} ({item.quantity}x)
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-xs">
-                  {items[0].namaProduk} ({items[0].quantity}x)
-                </p>
-              )}
-              {canCollapse && (
-                <button
-                  onClick={() =>
-                    setExpandedRows((prev) => ({
-                      ...prev,
-                      [row.original.id]: !prev[row.original.id],
-                    }))
-                  }
-                  className="text-blue-600 text-xs mt-1 hover:underline font-medium"
-                >
-                  {isExpanded
-                    ? "Sembunyikan"
-                    : `+ ${items.length - 1} lainnya...`}
-                </button>
-              )}
-            </div>
-          );
-        },
-      },
-      {
-        accessorKey: "totalBelanja",
-        header: "Total",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
-      },
-    ],
-    [expandedRows]
-  );
-
-  const txTable = useReactTable({
-    data: paginatedTxData,
-    columns: txColumns,
-    pageCount: Math.ceil(filteredTransactions.length / txPageSize),
-    state: { pagination: { pageIndex: txPageIndex, pageSize: txPageSize } },
-    onPaginationChange: setTxPagination,
-    getCoreRowModel: getCoreRowModel(),
-    manualPagination: true,
-  });
-
-  const productColumns = useMemo<ColumnDef<AggregatedProduct>[]>(
-    () => [
-      { accessorKey: "namaProduk", header: "Nama Produk" },
-      {
-        accessorKey: "totalQuantity",
-        header: "Jml Terjual",
-        cell: (info) => `${info.getValue()} pcs`,
-      },
-      {
-        accessorKey: "totalRevenue",
-        header: "Pendapatan",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
-      },
-    ],
-    []
-  );
-
-  const productTable = useReactTable({
-    data: paginatedProductData,
-    columns: productColumns,
-    pageCount: Math.ceil(aggregatedProducts.length / productPageSize),
-    state: {
-      pagination: { pageIndex: productPageIndex, pageSize: productPageSize },
-    },
-    onPaginationChange: setProductPagination,
-    getCoreRowModel: getCoreRowModel(),
-    manualPagination: true,
-  });
-
-  const expenseColumns = useMemo<ColumnDef<Expense>[]>(
-    () => [
-      {
-        accessorKey: "timestamp",
-        header: "Waktu",
-        cell: (info) =>
-          info
-            .getValue<Timestamp>()
-            .toDate()
-            .toLocaleString("id-ID", {
-              day: "2-digit",
-              month: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-      },
-      { accessorKey: "description", header: "Keterangan" },
-      {
-        accessorKey: "amount",
-        header: "Jumlah",
-        cell: (info) => `Rp ${info.getValue<number>().toLocaleString("id-ID")}`,
-      },
-    ],
-    []
-  );
-
-  const expenseTable = useReactTable({
-    data: paginatedExpenseData,
-    columns: expenseColumns,
-    pageCount: Math.ceil(filteredExpenses.length / expensePageSize),
-    state: {
-      pagination: { pageIndex: expensePageIndex, pageSize: expensePageSize },
-    },
-    onPaginationChange: setExpensePagination,
-    getCoreRowModel: getCoreRowModel(),
-    manualPagination: true,
-  });
-
-  // --- FUNGSI HANDLER (DENGAN PERBAIKAN) ---
-  const handleFilterTypeChange = (
-    newFilter: "daily" | "monthly" | "yearly"
-  ) => {
-    setFilter(newFilter);
-    // Reset pagination setiap kali tipe filter diubah
-    setTxPagination((prev) => ({ ...prev, pageIndex: 0 }));
-    setProductPagination((prev) => ({ ...prev, pageIndex: 0 }));
-    setExpensePagination((prev) => ({ ...prev, pageIndex: 0 }));
+  const resetPagination = () => {
+    setTxPageIndex(0);
+    setProductPageIndex(0);
+    setExpensePageIndex(0);
   };
-  const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const dateString = e.target.value;
-    if (dateString) {
-      const localDate = new Date(dateString.replace(/-/g, "/"));
-      setSelectedDate(localDate);
-      // Reset pagination setiap kali tanggal diubah
-      setTxPagination((prev) => ({ ...prev, pageIndex: 0 }));
-      setProductPagination((prev) => ({ ...prev, pageIndex: 0 }));
-      setExpensePagination((prev) => ({ ...prev, pageIndex: 0 }));
+
+  const handleFilterTypeChange = (nextFilter: RecapFilter) => {
+    setFilter(nextFilter);
+    setIsLoading(true);
+    resetPagination();
+    setExpandedRows({});
+  };
+
+  const handleSpecificDateChange = (value: string) => {
+    if (!value || !parseDateInput(value)) {
+      return;
     }
+
+    setSpecificDate(value);
+    setIsLoading(true);
+    resetPagination();
+    setExpandedRows({});
   };
+
+  const handleRangeDateChange = (field: "start" | "end", value: string) => {
+    if (!value || !parseDateInput(value)) {
+      return;
+    }
+
+    if (field === "start") {
+      setRangeStartDate(value);
+    } else {
+      setRangeEndDate(value);
+    }
+
+    setIsLoading(true);
+    resetPagination();
+    setExpandedRows({});
+  };
+
+  const handleTransactionPageChange = (nextPage: number) => {
+    setTxPageIndex(Math.max(0, Math.min(transactionPages - 1, nextPage)));
+  };
+
+  const handleProductPageChange = (nextPage: number) => {
+    setProductPageIndex(Math.max(0, Math.min(productPages - 1, nextPage)));
+  };
+
+  const handleExpensePageChange = (nextPage: number) => {
+    setExpensePageIndex(Math.max(0, Math.min(expensePages - 1, nextPage)));
+  };
+
+  const toggleExpandedRow = (transactionId: string) => {
+    setExpandedRows((currentRows) => ({
+      ...currentRows,
+      [transactionId]: !currentRows[transactionId],
+    }));
+  };
+
   const handleExport = () => {
-    if (filteredTransactions.length === 0 && filteredExpenses.length === 0) {
+    if (transactions.length === 0 && expenses.length === 0) {
       Swal.fire({
         icon: "info",
         title: "Info",
@@ -400,457 +388,516 @@ function RecapPage() {
       });
       return;
     }
-    const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Ringkasan Transaksi
-    if (filteredTransactions.length > 0) {
-      interface SummaryRow {
-        "Waktu Transaksi": string;
-        "Metode Pembayaran": string;
-        "Item Dibeli (Qty)": string;
-        "Total Penjualan (Kotor)": number;
-        "Total Modal": number;
-        "Laba Bersih": number;
-        "Total Item": number;
-      }
-      const transactionSummaryData: SummaryRow[] = filteredTransactions.map(
-        (t) => ({
-          "Waktu Transaksi": t.timestamp
-            .toDate()
-            .toLocaleString("id-ID", {
+    const workbook = XLSX.utils.book_new();
+
+    if (transactions.length > 0) {
+      const transactionSummary = transactions.map((transaction) => ({
+        "Waktu Transaksi": transaction.timestamp
+          ? transaction.timestamp.toLocaleString("id-ID", {
               year: "numeric",
               month: "short",
               day: "numeric",
               hour: "2-digit",
               minute: "2-digit",
-            }),
-          "Metode Pembayaran": t.paymentMethod.toUpperCase(),
-          "Item Dibeli (Qty)": t.items
-            .map((item) => `${item.namaProduk} (${item.quantity})`)
-            .join(", "),
-          "Total Penjualan (Kotor)": t.totalBelanja,
-          "Total Modal": t.totalModal || 0,
-          "Laba Bersih": t.totalBelanja - (t.totalModal || 0),
-          "Total Item": t.items.reduce((sum, item) => sum + item.quantity, 0),
-        })
-      );
-      const allItemsData = filteredTransactions.flatMap((t) =>
-        t.items.map((item) => ({
-          "Waktu Transaksi": t.timestamp
-            .toDate()
-            .toLocaleString("id-ID", {
-              year: "numeric",
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-          "Metode Pembayaran": t.paymentMethod.toUpperCase(),
+            })
+          : "Tanpa tanggal",
+        "Metode Pembayaran": transaction.paymentMethod.toUpperCase(),
+        "Item Dibeli": transaction.items
+          .map((item) => `${item.namaProduk} (${item.quantity})`)
+          .join(", "),
+        "Total Penjualan": transaction.totalBelanja,
+        "Total Modal": transaction.totalModal || 0,
+        "Laba Bersih": transaction.totalBelanja - (transaction.totalModal || 0),
+      }));
+
+      const itemDetails = transactions.flatMap((transaction) =>
+        transaction.items.map((item) => ({
+          "Waktu Transaksi": transaction.timestamp
+            ? transaction.timestamp.toLocaleString("id-ID", {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : "Tanpa tanggal",
+          "Metode Pembayaran": transaction.paymentMethod.toUpperCase(),
           "Nama Produk": item.namaProduk,
           Kuantitas: item.quantity,
           "Harga Jual Satuan": item.hargaSatuan,
-          "Harga Modal Satuan": item.hargaModal || 0,
+          "Harga Modal Satuan": item.hargaModal,
         }))
       );
-      transactionSummaryData.push({
-        "Waktu Transaksi": "TOTAL",
-        "Metode Pembayaran": "",
-        "Item Dibeli (Qty)": "",
-        "Total Penjualan (Kotor)": grossProfit,
-        "Total Modal": totalModal,
-        "Laba Bersih": netProfit + totalExpenses,
-        "Total Item": allItemsData.reduce(
-          (sum, item) => sum + item.Kuantitas,
-          0
-        ),
-      });
-      const wsSummary = XLSX.utils.json_to_sheet(transactionSummaryData);
-      wsSummary["!cols"] = [
-        { wch: 20 },
-        { wch: 18 },
-        { wch: 50 },
-        { wch: 20 },
-        { wch: 20 },
-        { wch: 20 },
-        { wch: 15 },
-      ];
-      XLSX.utils.book_append_sheet(wb, wsSummary, "Ringkasan Transaksi");
-      const wsItems = XLSX.utils.json_to_sheet(allItemsData);
-      wsItems["!cols"] = [
-        { wch: 20 },
-        { wch: 18 },
-        { wch: 30 },
-        { wch: 10 },
-        { wch: 20 },
-        { wch: 20 },
-      ];
-      XLSX.utils.book_append_sheet(wb, wsItems, "Detail Item Terjual");
+
+      const summarySheet = XLSX.utils.json_to_sheet(transactionSummary);
+      const itemsSheet = XLSX.utils.json_to_sheet(itemDetails);
+      XLSX.utils.book_append_sheet(workbook, summarySheet, "Ringkasan Transaksi");
+      XLSX.utils.book_append_sheet(workbook, itemsSheet, "Detail Item");
     }
 
-    // Sheet 3: Pengeluaran
-    if (filteredExpenses.length > 0) {
-      const expenseData = filteredExpenses.map((e) => ({
-        Waktu: e.timestamp.toDate().toLocaleString("id-ID"),
-        Keterangan: e.description,
-        Jumlah: e.amount,
-      }));
-      expenseData.push({
-        Waktu: "TOTAL",
-        Keterangan: "",
-        Jumlah: totalExpenses,
-      });
-      const wsExpenses = XLSX.utils.json_to_sheet(expenseData);
-      wsExpenses["!cols"] = [{ wch: 20 }, { wch: 40 }, { wch: 20 }];
-      XLSX.utils.book_append_sheet(wb, wsExpenses, "Pengeluaran");
+    if (expenses.length > 0) {
+      const expenseSheet = XLSX.utils.json_to_sheet(
+        expenses.map((expense) => ({
+          Waktu: expense.timestamp
+            ? expense.timestamp.toLocaleString("id-ID")
+            : "Tanpa tanggal",
+          Keterangan: expense.description,
+          Jumlah: expense.amount,
+        }))
+      );
+      XLSX.utils.book_append_sheet(workbook, expenseSheet, "Pengeluaran");
     }
 
-    const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const data = new Blob([excelBuffer], {
+    const excelBuffer = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([excelBuffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
     });
-    const fileName = `Rekap Penjualan - ${formatDateForInput(
-      selectedDate
-    )}.xlsx`;
-    saveAs(data, fileName);
+
+    const exportLabel =
+      filter === "daily"
+        ? `Harian-${formatDateForInput(new Date())}`
+        : filter === "monthly"
+        ? `Bulanan-${formatDateForInput(new Date()).slice(0, 7)}`
+        : filter === "yearly"
+        ? `Tahunan-${formatDateForInput(new Date()).slice(0, 4)}`
+        : filter === "specificDate"
+        ? `Tanggal-${specificDate}`
+        : rangeStartDate <= rangeEndDate
+        ? `Rentang-${rangeStartDate}-sd-${rangeEndDate}`
+        : `Rentang-${rangeEndDate}-sd-${rangeStartDate}`;
+
+    saveAs(blob, `Rekap-Warkocap-${exportLabel}.xlsx`);
   };
 
   return (
-    <div className="container mx-auto p-8">
-      {/* --- Header & Filter --- */}
-      <h1 className="text-3xl font-bold mb-6">Rekap Penjualan</h1>
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6 p-4 bg-white rounded-lg shadow">
-        <div className="flex flex-wrap items-center gap-4">
-          <button
-            onClick={() => handleFilterTypeChange("daily")}
-            className={`px-4 py-2 rounded ${
-              filter === "daily" ? "bg-blue-600 text-white" : "bg-gray-200"
-            }`}
-          >
-            Harian
-          </button>
-          <button
-            onClick={() => handleFilterTypeChange("monthly")}
-            className={`px-4 py-2 rounded ${
-              filter === "monthly" ? "bg-blue-600 text-white" : "bg-gray-200"
-            }`}
-          >
-            Bulanan
-          </button>
-          <button
-            onClick={() => handleFilterTypeChange("yearly")}
-            className={`px-4 py-2 rounded ${
-              filter === "yearly" ? "bg-blue-600 text-white" : "bg-gray-200"
-            }`}
-          >
-            Tahunan
-          </button>
-          <input
-            type="date"
-            value={formatDateForInput(selectedDate)}
-            onChange={handleDateChange}
-            className="p-2 border rounded"
-          />
+    <section className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-4 md:px-6 md:py-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="rounded-[1.75rem] border border-white/60 bg-white/92 px-5 py-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
+          <h1 className="text-2xl font-bold text-slate-900">Rekap</h1>
         </div>
         <button
           onClick={handleExport}
-          disabled={
-            filteredTransactions.length === 0 && filteredExpenses.length === 0
-          }
-          className="bg-emerald-600 text-white font-bold py-2 px-4 rounded hover:bg-emerald-700 disabled:bg-gray-400"
+          disabled={transactions.length === 0 && expenses.length === 0}
+          className="rounded-[1.75rem] bg-slate-950 px-5 py-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           Download Excel
         </button>
       </div>
 
-      {/* --- Ringkasan --- */}
-      <h2 className="text-xl font-semibold mb-4 text-gray-700">
-        Ringkasan Metode Pembayaran
-      </h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-        <div className="bg-blue-100 border-l-4 border-blue-500 p-6 rounded-lg shadow-lg">
-          <p className="font-semibold text-blue-800">Total Cash</p>
-          <p className="text-3xl font-bold mt-2 text-blue-900">
-            Rp {cashTotal.toLocaleString("id-ID")}
-          </p>
-        </div>
-        <div className="bg-purple-100 border-l-4 border-purple-500 p-6 rounded-lg shadow-lg">
-          <p className="font-semibold text-purple-800">Total QRIS</p>
-          <p className="text-3xl font-bold mt-2 text-purple-900">
-            Rp {qrisTotal.toLocaleString("id-ID")}
-          </p>
-        </div>
-      </div>
-      <h2 className="text-xl font-semibold mb-4 text-gray-700">
-        Ringkasan Profit & Pengeluaran
-      </h2>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-        <div className="bg-gray-100 p-6 rounded-lg shadow-lg">
-          <p className="font-semibold text-gray-800">Laba Kotor</p>
-          <p className="text-3xl font-bold mt-2 text-gray-900">
-            Rp {grossProfit.toLocaleString("id-ID")}
-          </p>
-        </div>
-        <div className="bg-orange-100 border-l-4 border-orange-500 p-6 rounded-lg shadow-lg">
-          <p className="font-semibold text-orange-800">Total Pengeluaran</p>
-          <p className="text-3xl font-bold mt-2 text-orange-900">
-            Rp {totalExpenses.toLocaleString("id-ID")}
-          </p>
-        </div>
-        <div className="bg-red-100 p-6 rounded-lg shadow-lg">
-          <p className="font-semibold text-red-800">Total Modal</p>
-          <p className="text-3xl font-bold mt-2 text-red-900">
-            Rp {totalModal.toLocaleString("id-ID")}
-          </p>
-        </div>
-        <div className="bg-green-100 p-6 rounded-lg shadow-lg">
-          <p className="font-semibold text-green-800">Laba Bersih</p>
-          <p className="text-3xl font-bold mt-2 text-green-900">
-            Rp {netProfit.toLocaleString("id-ID")}
-          </p>
+      <div className="rounded-[2rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2">
+            {([
+              ["daily", "Harian"],
+              ["monthly", "Bulanan"],
+              ["yearly", "Tahunan"],
+              ["specificDate", "Spesifik Tanggal"],
+              ["dateRange", "Rentang Tanggal"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => handleFilterTypeChange(value)}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  filter === value
+                    ? "bg-slate-950 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {filter === "specificDate" ? (
+            <div className="w-full md:max-w-xs">
+              <input
+                type="date"
+                value={specificDate}
+                onChange={(e) => handleSpecificDateChange(e.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+              />
+            </div>
+          ) : filter === "dateRange" ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <input
+                type="date"
+                value={rangeStartDate}
+                onChange={(e) => handleRangeDateChange("start", e.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+              />
+              <input
+                type="date"
+                value={rangeEndDate}
+                onChange={(e) => handleRangeDateChange("end", e.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 
-      {/* --- Tiga Tabel Berdampingan --- */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* --- Tabel Detail Transaksi --- */}
-        <div>
-          <h2 className="text-2xl font-bold mb-4">Detail Transaksi</h2>
-          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-            <table className="w-full text-sm text-left text-gray-700">
-              <thead className="text-xs text-gray-700 uppercase bg-gray-100">
-                {txTable.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id}>
-                    {hg.headers.map((h) => (
-                      <th key={h.id} className="px-6 py-3">
-                        {flexRender(h.column.columnDef.header, h.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {txTable.getRowModel().rows.length > 0 ? (
-                  txTable.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className="border-b hover:bg-gray-50">
-                      {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="px-6 py-4">
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext()
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={txColumns.length} className="text-center p-6">
-                      Tidak ada data.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-center gap-2 mt-4">
+      <div className="rounded-[2rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+        <div className="flex flex-wrap gap-2">
+          {([
+            ["total", "Rekap Total"],
+            ["ringkasan", "Rekap Ringkasan"],
+          ] as const).map(([value, label]) => (
             <button
-              onClick={() => txTable.setPageIndex(0)}
-              disabled={!txTable.getCanPreviousPage()}
-              className="p-2 border rounded"
+              key={value}
+              onClick={() => setRecapView(value)}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                recapView === value
+                  ? "bg-slate-950 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
             >
-              {"<<"}
+              {label}
             </button>
-            <button
-              onClick={() => txTable.previousPage()}
-              disabled={!txTable.getCanPreviousPage()}
-              className="p-2 border rounded"
-            >
-              {"<"}
-            </button>
-            <span className="gap-1">
-              Hal <strong>{txPageIndex + 1}</strong> dari{" "}
-              <strong>{txTable.getPageCount()}</strong>
-            </span>
-            <button
-              onClick={() => txTable.nextPage()}
-              disabled={!txTable.getCanNextPage()}
-              className="p-2 border rounded"
-            >
-              {">"}
-            </button>
-            <button
-              onClick={() => txTable.setPageIndex(txTable.getPageCount() - 1)}
-              disabled={!txTable.getCanNextPage()}
-              className="p-2 border rounded"
-            >
-              {">>"}
-            </button>
-          </div>
+          ))}
         </div>
+      </div>
 
-        {/* --- Tabel Produk Terjual --- */}
-        <div>
-          <h2 className="text-2xl font-bold mb-4">Ringkasan Produk Terjual</h2>
-          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-            <table className="w-full text-sm text-left text-gray-700">
-              <thead className="text-xs text-gray-700 uppercase bg-gray-100">
-                {productTable.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id}>
-                    {hg.headers.map((h) => (
-                      <th key={h.id} className="px-6 py-3">
-                        {flexRender(h.column.columnDef.header, h.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {productTable.getRowModel().rows.length > 0 ? (
-                  productTable.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className="border-b hover:bg-gray-50">
-                      {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="px-6 py-4">
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext()
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td
-                      colSpan={productColumns.length}
-                      className="text-center p-6"
+      {isLoading ? (
+        <div className="rounded-[2rem] border border-dashed border-slate-300 bg-white/70 p-8 text-center text-sm text-slate-500">
+          Memuat rekap pada periode aktif...
+        </div>
+      ) : recapView === "total" ? (
+        <>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <SummaryCard label="Cash" value={formatCurrency(cashTotal)} tone="blue" />
+            <SummaryCard label="QRIS" value={formatCurrency(qrisTotal)} tone="violet" />
+            <SummaryCard label="Omzet" value={formatCurrency(grossRevenue)} tone="slate" />
+            <SummaryCard label="Total Modal" value={formatCurrency(totalModal)} tone="rose" />
+            <SummaryCard label="Pengeluaran" value={formatCurrency(totalExpenses)} tone="amber" />
+            <SummaryCard label="Laba Bersih" value={formatCurrency(netProfit)} tone="emerald" />
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            {([
+              ["Total transaksi", `${transactions.length} transaksi`],
+              ["Total item terjual", `${totalItemsSold} item`],
+              ["Catatan pengeluaran", `${expenses.length} catatan`],
+            ] as const).map(([label, value]) => (
+              <div
+                key={label}
+                className="rounded-[1.75rem] border border-white/60 bg-white/92 px-5 py-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur"
+              >
+                <p className="text-sm text-slate-500">{label}</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">{value}</p>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="rounded-[2rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+            <div className="flex flex-wrap gap-2">
+              {([
+                ["latestTransactions", "Transaksi Terbaru"],
+                ["topProducts", "Produk Terlaris"],
+                ["transactions", "Transaksi"],
+                ["products", "Produk Terjual"],
+                ["expenses", "Pengeluaran"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setActivePanel(value)}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    activePanel === value
+                      ? "bg-amber-400 text-slate-950"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {activePanel === "latestTransactions" ? (
+            <div className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Transaksi Terbaru</h2>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {transactions.length} transaksi
+                </span>
+              </div>
+              <div className="space-y-3">
+                {transactions.slice(0, 4).length > 0 ? (
+                  transactions.slice(0, 4).map((transaction) => (
+                    <article
+                      key={transaction.id}
+                      className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
                     >
-                      Tidak ada data.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-center gap-2 mt-4">
-            <button
-              onClick={() => productTable.setPageIndex(0)}
-              disabled={!productTable.getCanPreviousPage()}
-              className="p-2 border rounded"
-            >
-              {"<<"}
-            </button>
-            <button
-              onClick={() => productTable.previousPage()}
-              disabled={!productTable.getCanPreviousPage()}
-              className="p-2 border rounded"
-            >
-              {"<"}
-            </button>
-            <span className="gap-1">
-              Hal <strong>{productPageIndex + 1}</strong> dari{" "}
-              <strong>{productTable.getPageCount()}</strong>
-            </span>
-            <button
-              onClick={() => productTable.nextPage()}
-              disabled={!productTable.getCanNextPage()}
-              className="p-2 border rounded"
-            >
-              {">"}
-            </button>
-            <button
-              onClick={() =>
-                productTable.setPageIndex(productTable.getPageCount() - 1)
-              }
-              disabled={!productTable.getCanNextPage()}
-              className="p-2 border rounded"
-            >
-              {">>"}
-            </button>
-          </div>
-        </div>
-
-        {/* --- Tabel Detail Pengeluaran --- */}
-        <div>
-          <h2 className="text-2xl font-bold mb-4">Detail Pengeluaran</h2>
-          <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-            <table className="w-full text-sm text-left text-gray-700">
-              <thead className="text-xs text-gray-700 uppercase bg-gray-100">
-                {expenseTable.getHeaderGroups().map((hg) => (
-                  <tr key={hg.id}>
-                    {hg.headers.map((h) => (
-                      <th key={h.id} className="px-6 py-3">
-                        {flexRender(h.column.columnDef.header, h.getContext())}
-                      </th>
-                    ))}
-                  </tr>
-                ))}
-              </thead>
-              <tbody>
-                {expenseTable.getRowModel().rows.length > 0 ? (
-                  expenseTable.getRowModel().rows.map((row) => (
-                    <tr key={row.id} className="border-b hover:bg-gray-50">
-                      {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="px-6 py-4">
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext()
-                          )}
-                        </td>
-                      ))}
-                    </tr>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                            {transaction.timestamp
+                              ? transaction.timestamp.toLocaleString("id-ID", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "Tanpa tanggal"}
+                          </p>
+                          <h3 className="mt-2 text-base font-semibold text-slate-900">
+                            {transaction.items[0]?.namaProduk ?? "Tanpa item"}
+                          </h3>
+                          <p className="mt-1 text-sm text-slate-500">
+                            {transaction.items.reduce(
+                              (sum, item) => sum + item.quantity,
+                              0
+                            )} item, {transaction.paymentMethod.toUpperCase()}
+                          </p>
+                        </div>
+                        <p className="text-base font-bold text-slate-900">
+                          {formatCurrency(transaction.totalBelanja)}
+                        </p>
+                      </div>
+                    </article>
                   ))
                 ) : (
-                  <tr>
-                    <td
-                      colSpan={expenseColumns.length}
-                      className="text-center p-6"
-                    >
-                      Tidak ada data.
-                    </td>
-                  </tr>
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                    Belum ada transaksi pada periode ini.
+                  </div>
                 )}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-center gap-2 mt-4">
-            <button
-              onClick={() => expenseTable.setPageIndex(0)}
-              disabled={!expenseTable.getCanPreviousPage()}
-              className="p-2 border rounded"
-            >
-              {"<<"}
-            </button>
-            <button
-              onClick={() => expenseTable.previousPage()}
-              disabled={!expenseTable.getCanPreviousPage()}
-              className="p-2 border rounded"
-            >
-              {"<"}
-            </button>
-            <span className="gap-1">
-              Hal <strong>{expensePageIndex + 1}</strong> dari{" "}
-              <strong>{expenseTable.getPageCount()}</strong>
-            </span>
-            <button
-              onClick={() => expenseTable.nextPage()}
-              disabled={!expenseTable.getCanNextPage()}
-              className="p-2 border rounded"
-            >
-              {">"}
-            </button>
-            <button
-              onClick={() =>
-                expenseTable.setPageIndex(expenseTable.getPageCount() - 1)
-              }
-              disabled={!expenseTable.getCanNextPage()}
-              className="p-2 border rounded"
-            >
-              {">>"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+              </div>
+            </div>
+          ) : activePanel === "topProducts" ? (
+            <div className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Produk Terlaris</h2>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {aggregatedProducts.length} produk
+                </span>
+              </div>
+              <div className="space-y-3">
+                {aggregatedProducts.slice(0, 5).length > 0 ? (
+                  aggregatedProducts.slice(0, 5).map((product, index) => (
+                    <article
+                      key={`${product.namaProduk}-${index}`}
+                      className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-semibold text-slate-900">{product.namaProduk}</h3>
+                          <p className="text-sm text-slate-500">
+                            {product.totalQuantity} pcs terjual
+                          </p>
+                        </div>
+                        <p className="font-bold text-slate-900">
+                          {formatCurrency(product.totalRevenue)}
+                        </p>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                    Belum ada data produk terjual.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : activePanel === "transactions" ? (
+            <div className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Detail Transaksi</h2>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {transactions.length} transaksi
+                </span>
+              </div>
+              <div className="space-y-3">
+                {paginatedTransactions.length > 0 ? (
+                  paginatedTransactions.map((transaction) => {
+                    const isExpanded = expandedRows[transaction.id];
+
+                    return (
+                      <article
+                        key={transaction.id}
+                        className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                              {transaction.timestamp
+                                ? transaction.timestamp.toLocaleString("id-ID", {
+                                    day: "2-digit",
+                                    month: "short",
+                                    year: "numeric",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "Tanpa tanggal"}
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
+                                {transaction.paymentMethod.toUpperCase()}
+                              </span>
+                              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
+                                {transaction.items.reduce(
+                                  (sum, item) => sum + item.quantity,
+                                  0
+                                )} item
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-base font-bold text-slate-900">
+                            {formatCurrency(transaction.totalBelanja)}
+                          </p>
+                        </div>
+                        <div className="mt-4 rounded-2xl bg-white p-4">
+                          {(isExpanded ? transaction.items : transaction.items.slice(0, 1)).map(
+                            (item, index) => (
+                              <div
+                                key={`${transaction.id}-${item.productId}-${index}`}
+                                className="flex items-center justify-between gap-3 py-1 text-sm text-slate-600"
+                              >
+                                <span>
+                                  {item.namaProduk} ({item.quantity}x)
+                                </span>
+                                <span>{formatCurrency(item.hargaSatuan * item.quantity)}</span>
+                              </div>
+                            )
+                          )}
+                          {transaction.items.length > 1 && (
+                            <button
+                              onClick={() => toggleExpandedRow(transaction.id)}
+                              className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-amber-700 hover:underline"
+                            >
+                              {isExpanded
+                                ? "Sembunyikan detail"
+                                : `Lihat ${transaction.items.length - 1} item lainnya`}
+                              {isExpanded ? (
+                                <ChevronUpIcon className="h-4 w-4" />
+                              ) : (
+                                <ChevronDownIcon className="h-4 w-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                    Belum ada transaksi pada periode ini.
+                  </div>
+                )}
+              </div>
+              <PaginationControls
+                pageIndex={currentTxPageIndex}
+                totalPages={transactionPages}
+                onChange={handleTransactionPageChange}
+              />
+            </div>
+          ) : activePanel === "products" ? (
+            <div className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Ringkasan Produk Terjual</h2>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {aggregatedProducts.length} produk
+                </span>
+              </div>
+              <div className="space-y-3">
+                {paginatedProducts.length > 0 ? (
+                  paginatedProducts.map((product, index) => (
+                    <article
+                      key={`${product.namaProduk}-${index}`}
+                      className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900">
+                            {product.namaProduk}
+                          </h3>
+                          <p className="mt-1 text-sm text-slate-500">
+                            {product.totalQuantity} pcs terjual
+                          </p>
+                        </div>
+                        <p className="text-base font-bold text-slate-900">
+                          {formatCurrency(product.totalRevenue)}
+                        </p>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                    Belum ada produk terjual pada periode ini.
+                  </div>
+                )}
+              </div>
+              <PaginationControls
+                pageIndex={currentProductPageIndex}
+                totalPages={productPages}
+                onChange={handleProductPageChange}
+              />
+            </div>
+          ) : (
+            <div className="rounded-[2rem] border border-white/60 bg-white/90 p-5 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur md:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Detail Pengeluaran</h2>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {expenses.length} catatan
+                </span>
+              </div>
+              <div className="space-y-3">
+                {paginatedExpenses.length > 0 ? (
+                  paginatedExpenses.map((expense) => (
+                    <article
+                      key={expense.id}
+                      className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                            {expense.timestamp
+                              ? expense.timestamp.toLocaleString("id-ID", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  year: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "Tanpa tanggal"}
+                          </p>
+                          <h3 className="mt-2 text-base font-semibold text-slate-900">
+                            {expense.description}
+                          </h3>
+                        </div>
+                        <p className="text-base font-bold text-slate-900">
+                          {formatCurrency(expense.amount)}
+                        </p>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <div className="rounded-[1.5rem] border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                    Belum ada pengeluaran pada periode ini.
+                  </div>
+                )}
+              </div>
+              <PaginationControls
+                pageIndex={currentExpensePageIndex}
+                totalPages={expensePages}
+                onChange={handleExpensePageChange}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
