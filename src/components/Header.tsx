@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
   clearPersistedUserRole,
   getUserRoleServerSnapshot,
@@ -28,7 +28,6 @@ const navigationItems: NavigationItem[] = [
 
 export default function Header() {
   const pathname = usePathname();
-  const router = useRouter();
   const menuRef = useRef<HTMLDivElement>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const userRole = useSyncExternalStore(
@@ -65,7 +64,7 @@ export default function Header() {
   const handleLogout = () => {
     setIsMenuOpen(false);
     clearPersistedUserRole();
-    router.push("/login");
+    window.location.replace("/login");
   };
 
   const isActivePath = (href: string) =>

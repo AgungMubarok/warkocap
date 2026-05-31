@@ -1,42 +1,29 @@
 "use client";
 
-import { startTransition, useEffect, useState, useSyncExternalStore } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   clearPersistedUserRole,
-  getUserRoleServerSnapshot,
   getUserRoleSnapshot,
   persistUserRole,
-  subscribeToUserRole,
 } from "@/lib/user-role";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [passcode, setPasscode] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const userRole = useSyncExternalStore(
-    subscribeToUserRole,
-    getUserRoleSnapshot,
-    getUserRoleServerSnapshot
-  );
 
   useEffect(() => {
-    if (!userRole) {
-      clearPersistedUserRole();
-    }
-  }, [userRole]);
+    const activeRole = getUserRoleSnapshot();
 
-  useEffect(() => {
-    if (userRole === "admin") {
-      router.replace("/admin/daftar");
+    if (activeRole) {
+      window.location.replace("/");
       return;
     }
 
-    if (userRole === "cashier") {
-      router.replace("/");
+    if (typeof window !== "undefined" && localStorage.getItem("userRole")) {
+      clearPersistedUserRole();
     }
-  }, [router, userRole]);
+  }, []);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,33 +36,19 @@ export default function LoginPage() {
     if (normalizedPasscode === adminPasscode) {
       setIsSubmitting(true);
       persistUserRole("admin");
-      startTransition(() => {
-        router.push("/admin/daftar");
-      });
+      window.location.replace("/");
       return;
     }
 
     if (normalizedPasscode === cashierPasscode) {
       setIsSubmitting(true);
       persistUserRole("cashier");
-      startTransition(() => {
-        router.push("/");
-      });
+      window.location.replace("/");
       return;
     }
 
     setError("Kode sandi salah. Coba lagi.");
   };
-
-  if (userRole) {
-    return (
-      <section className="flex min-h-[calc(100vh-9rem)] items-center justify-center">
-        <div className="rounded-[2rem] border border-white/60 bg-white/90 px-6 py-8 text-center shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
-          <p className="text-base font-semibold text-slate-900">Memeriksa sesi login...</p>
-        </div>
-      </section>
-    );
-  }
 
   return (
     <section className="flex min-h-[calc(100vh-9rem)] items-center justify-center">

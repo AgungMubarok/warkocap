@@ -31,11 +31,7 @@ export function middleware(request: NextRequest) {
   const userRole = getUserRole(request);
 
   if (pathname === "/login") {
-    if (userRole === "admin") {
-      return NextResponse.redirect(new URL("/admin/daftar", request.url));
-    }
-
-    if (userRole === "cashier") {
+    if (userRole) {
       return NextResponse.redirect(new URL("/", request.url));
     }
 
