@@ -1,7 +1,27 @@
+import { clearSessionCache } from "@/lib/session-cache";
+
 export type UserRole = "admin" | "cashier";
 
 const USER_ROLE_COOKIE_NAME = "userRole";
 const USER_ROLE_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+
+function normalizeUserRole(value: string | null | undefined): UserRole | null {
+  return value === "admin" || value === "cashier" ? value : null;
+}
+
+function getUserRoleFromCookie(): UserRole | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const cookieValue = document.cookie
+    .split(";")
+    .map((segment) => segment.trim())
+    .find((segment) => segment.startsWith(`${USER_ROLE_COOKIE_NAME}=`))
+    ?.slice(USER_ROLE_COOKIE_NAME.length + 1);
+
+  return normalizeUserRole(cookieValue ?? null);
+}
 
 export function subscribeToUserRole(callback: () => void) {
   if (typeof window === "undefined") {
@@ -24,8 +44,17 @@ export function getUserRoleSnapshot(): UserRole | null {
     return null;
   }
 
-  const storedRole = localStorage.getItem("userRole");
-  return storedRole === "admin" || storedRole === "cashier" ? storedRole : null;
+  const cookieRole = getUserRoleFromCookie();
+  if (!cookieRole) {
+    return null;
+  }
+
+  const storedRole = normalizeUserRole(localStorage.getItem(USER_ROLE_COOKIE_NAME));
+  if (storedRole !== cookieRole) {
+    localStorage.setItem(USER_ROLE_COOKIE_NAME, cookieRole);
+  }
+
+  return cookieRole;
 }
 
 export function getUserRoleServerSnapshot() {
@@ -56,6 +85,7 @@ export function clearPersistedUserRole() {
   }
 
   localStorage.removeItem(USER_ROLE_COOKIE_NAME);
+  clearSessionCache();
   document.cookie = `${USER_ROLE_COOKIE_NAME}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
   dispatchUserRoleChange();
 }

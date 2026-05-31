@@ -3,6 +3,7 @@
 import { startTransition, useEffect, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import {
+  clearPersistedUserRole,
   getUserRoleServerSnapshot,
   getUserRoleSnapshot,
   persistUserRole,
@@ -19,6 +20,12 @@ export default function LoginPage() {
     getUserRoleSnapshot,
     getUserRoleServerSnapshot
   );
+
+  useEffect(() => {
+    if (!userRole) {
+      clearPersistedUserRole();
+    }
+  }, [userRole]);
 
   useEffect(() => {
     if (userRole === "admin") {

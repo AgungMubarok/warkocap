@@ -44,3 +44,11 @@ export function removeSessionCacheByPrefix(prefix: string) {
 
   keysToDelete.forEach((key) => window.sessionStorage.removeItem(key));
 }
+
+export function clearSessionCache() {
+  if (!canUseSessionStorage()) {
+    return;
+  }
+
+  window.sessionStorage.clear();
+}
