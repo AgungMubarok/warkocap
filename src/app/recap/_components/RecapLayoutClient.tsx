@@ -27,7 +27,6 @@ const MAX_DATE_RANGE_MONTHS = 3;
 
 const recapNavigationItems = [
   { href: "/recap", label: "Rekap Total" },
-  { href: "/recap/transaksi-terbaru", label: "Transaksi Terbaru" },
   { href: "/recap/produk-terlaris", label: "Produk Terlaris" },
   { href: "/recap/transaksi", label: "Transaksi" },
   { href: "/recap/produk-terjual", label: "Produk Terjual" },
@@ -98,7 +97,7 @@ function isRecapNavigationActive(pathname: string, href: string) {
     return pathname === href;
   }
 
-  return pathname.startsWith(href);
+  return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 export function useRecapContext() {

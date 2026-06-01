@@ -1,5 +1,5 @@
-import { LatestTransactionsSection } from "../_components/RecapSections";
+import { redirect } from "next/navigation";
 
 export default function RecapLatestTransactionsPage() {
-  return <LatestTransactionsSection />;
+  redirect("/recap/transaksi");
 }
