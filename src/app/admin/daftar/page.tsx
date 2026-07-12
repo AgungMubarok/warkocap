@@ -40,6 +40,11 @@ import {
 } from "@/lib/firebase-data";
 import { useProductCatalog } from "@/hooks/useProductCatalog";
 import type { Product } from "@/lib/types";
+import {
+  getProductStockStatus,
+  isLowStockAlert,
+  type StockStatus,
+} from "@/lib/stock";
 
 // Atur elemen root untuk modal (untuk aksesibilitas)
 Modal.setAppElement("body");
@@ -53,6 +58,7 @@ function DaftarProdukPage() {
   const [editHargaModalInput, setEditHargaModalInput] = useState("");
 
   const [globalFilter, setGlobalFilter] = useState("");
+  const [stockFilter, setStockFilter] = useState<StockStatus | "SEMUA_PRODUK">("SEMUA_PRODUK");
   const [sorting, setSorting] = useState<SortingState>([]);
   const [{ pageIndex, pageSize }, setPagination] = useState<PaginationState>({
     pageIndex: 0,
@@ -64,14 +70,20 @@ function DaftarProdukPage() {
       ...currentPagination,
       pageIndex: 0,
     }));
-  }, [globalFilter, pageSize]);
+  }, [globalFilter, stockFilter, pageSize]);
 
   const filteredProducts = useMemo(() => {
-    const filteredCatalog = globalFilter
+    let filteredCatalog = globalFilter
       ? products.filter((product) =>
           product.namaProduk_lowercase.includes(globalFilter)
         )
       : products;
+
+    if (stockFilter !== "SEMUA_PRODUK") {
+      filteredCatalog = filteredCatalog.filter(
+        (product) => getProductStockStatus(product.stok) === stockFilter
+      );
+    }
 
     if (sorting.length === 0) {
       return filteredCatalog;
@@ -90,13 +102,10 @@ function DaftarProdukPage() {
         ? String(rightValue ?? "").localeCompare(String(leftValue ?? ""))
         : String(leftValue ?? "").localeCompare(String(rightValue ?? ""));
     });
-  }, [products, globalFilter, sorting]);
+  }, [products, globalFilter, stockFilter, sorting]);
 
   const lowStockCount = useMemo(
-    () =>
-      products.filter(
-        (product) => typeof product.stok === "number" && product.stok <= 5
-      ).length,
+    () => products.filter((product) => isLowStockAlert(product.stok)).length,
     [products]
   );
 
@@ -325,21 +334,36 @@ function DaftarProdukPage() {
             placeholder="Cari produk..."
             className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
           />
-          <div className="relative w-full sm:w-auto sm:min-w-[11rem] xl:shrink-0">
-            <select
-              value={table.getState().pagination.pageSize}
-              onChange={(e) => {
-                table.setPageSize(Number(e.target.value));
-              }}
-              className="w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-11 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
-            >
-              {[10, 20, 30, 50].map((size) => (
-                <option key={size} value={size}>
-                  Tampil {size}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <div className="flex w-full flex-col gap-3 sm:flex-row sm:w-auto xl:shrink-0">
+            <div className="relative w-full sm:min-w-[11rem]">
+              <select
+                value={stockFilter}
+                onChange={(e) => setStockFilter(e.target.value as StockStatus | "SEMUA_PRODUK")}
+                className="w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-11 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+              >
+                <option value="SEMUA_PRODUK">Semua Produk</option>
+                <option value="TERSEDIA">Tersedia</option>
+                <option value="STOK_RENDAH">Stok Rendah</option>
+                <option value="STOK_HABIS">Stok Habis</option>
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+            </div>
+            <div className="relative w-full sm:min-w-[11rem]">
+              <select
+                value={table.getState().pagination.pageSize}
+                onChange={(e) => {
+                  table.setPageSize(Number(e.target.value));
+                }}
+                className="w-full appearance-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-11 text-sm text-slate-900 outline-none transition focus:border-amber-500 focus:bg-white"
+              >
+                {[10, 20, 30, 50].map((size) => (
+                  <option key={size} value={size}>
+                    Tampil {size}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+            </div>
           </div>
         </div>
 

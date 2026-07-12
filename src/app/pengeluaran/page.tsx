@@ -22,11 +22,11 @@ import {
 import {
   formatCurrency,
   formatCurrencyInput,
-  formatDateForInput,
-  getCalendarRange,
   normalizeCurrencyInput,
   parseCurrencyInput,
 } from "@/lib/date-range";
+import { getBusinessDateKey, getBusinessDateRange, formatJakartaDate } from "@/lib/business-time";
+import { useBusinessDayRollover } from "@/hooks/useBusinessDayRollover";
 import { getExpensesByRange, invalidateExpenseCaches } from "@/lib/firebase-data";
 import type { ExpenseRecord } from "@/lib/types";
 
@@ -35,14 +35,20 @@ Modal.setAppElement("body");
 const PAGE_SIZE = 6;
 
 function PengeluaranPage() {
-  const today = useMemo(() => new Date(), []);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [isLoadingExpenses, setIsLoadingExpenses] = useState(true);
-  const [fromDate, setFromDate] = useState(today);
-  const [toDate, setToDate] = useState(today);
+  const [fromDate, setFromDate] = useState(() => getBusinessDateKey());
+  const [toDate, setToDate] = useState(() => getBusinessDateKey());
+  const [rolloverTick, setRolloverTick] = useState(0);
+
+  const handleRollover = useCallback(() => {
+    setRolloverTick((prev) => prev + 1);
+  }, []);
+
+  useBusinessDayRollover(handleRollover);
   const [pageIndex, setPageIndex] = useState(0);
   const [modalIsOpen, setModalIsOpen] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState<ExpenseRecord | null>(null);
@@ -52,7 +58,7 @@ function PengeluaranPage() {
     setIsLoadingExpenses(true);
 
     try {
-      const { start, end } = getCalendarRange(fromDate, toDate);
+      const { start, end } = getBusinessDateRange(fromDate, toDate);
       const nextExpenses = await getExpensesByRange(start, end);
       setExpenses(nextExpenses);
     } finally {
@@ -65,7 +71,7 @@ function PengeluaranPage() {
 
     const syncExpenses = async () => {
       try {
-        const { start, end } = getCalendarRange(fromDate, toDate);
+        const { start, end } = getBusinessDateRange(fromDate, toDate);
         const nextExpenses = await getExpensesByRange(start, end);
 
         if (!isActive) {
@@ -85,7 +91,7 @@ function PengeluaranPage() {
     return () => {
       isActive = false;
     };
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, rolloverTick]);
 
   const totalPages = expenses.length === 0 ? 1 : Math.ceil(expenses.length / PAGE_SIZE);
   const currentPageIndex = Math.min(pageIndex, totalPages - 1);
@@ -101,30 +107,26 @@ function PengeluaranPage() {
   );
 
   const handleFromDateChange = (value: string) => {
-    const nextDate = new Date(value.replace(/-/g, "/"));
-
-    if (Number.isNaN(nextDate.getTime())) {
+    if (!value) {
       return;
     }
 
-    setFromDate(nextDate);
-    if (nextDate > toDate) {
-      setToDate(nextDate);
+    setFromDate(value);
+    if (value > toDate) {
+      setToDate(value);
     }
     setIsLoadingExpenses(true);
     setPageIndex(0);
   };
 
   const handleToDateChange = (value: string) => {
-    const nextDate = new Date(value.replace(/-/g, "/"));
-
-    if (Number.isNaN(nextDate.getTime())) {
+    if (!value) {
       return;
     }
 
-    setToDate(nextDate);
-    if (nextDate < fromDate) {
-      setFromDate(nextDate);
+    setToDate(value);
+    if (value < fromDate) {
+      setFromDate(value);
     }
     setIsLoadingExpenses(true);
     setPageIndex(0);
@@ -263,7 +265,7 @@ function PengeluaranPage() {
         <div className="rounded-[1.5rem] border border-white/60 bg-white/90 p-4 shadow-[0_20px_80px_rgba(15,23,42,0.08)] backdrop-blur">
           <p className="text-sm text-slate-500">Rentang aktif</p>
           <p className="mt-2 text-lg font-bold text-slate-900">
-            {formatDateForInput(fromDate)} s/d {formatDateForInput(toDate)}
+            {formatJakartaDate(fromDate)} s/d {formatJakartaDate(toDate)}
           </p>
         </div>
       </div>
@@ -327,7 +329,7 @@ function PengeluaranPage() {
                 <input
                   id="fromDate"
                   type="date"
-                  value={formatDateForInput(fromDate)}
+                  value={fromDate}
                   onChange={(e) => handleFromDateChange(e.target.value)}
                   className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm outline-none transition focus:border-orange-400 focus:bg-white"
                 />
@@ -339,7 +341,7 @@ function PengeluaranPage() {
                 <input
                   id="toDate"
                   type="date"
-                  value={formatDateForInput(toDate)}
+                  value={toDate}
                   onChange={(e) => handleToDateChange(e.target.value)}
                   className="mt-1 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm outline-none transition focus:border-orange-400 focus:bg-white"
                 />
@@ -362,11 +364,7 @@ function PengeluaranPage() {
                     <div>
                       <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
                         {expense.timestamp
-                          ? expense.timestamp.toLocaleDateString("id-ID", {
-                              day: "2-digit",
-                              month: "short",
-                              year: "numeric",
-                            })
+                          ? formatJakartaDate(expense.timestamp)
                           : "Tanpa tanggal"}
                       </p>
                       <h3 className="mt-2 text-base font-semibold text-slate-900">

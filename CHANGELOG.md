@@ -6,12 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Stock-status filter on the Admin Daftar Produk page to easily sort products by availability (Tersedia, Stok Rendah, Stok Habis).
+- Centralized stock normalization and categorization rules, ensuring products without tracked stock are consistently treated as available.
 - Product stock support across the catalog, admin create flow, admin edit flow, and checkout.
 - Session-backed catalog caching to reduce repeated Firestore reads.
 - Shared data helpers for transaction and expense queries by time range.
 - Expense filtering by calendar dates.
 - Expanded recap filters for daily, monthly, yearly, specific date, and date range modes.
-- Jakarta-aware date utilities, including a 4:00 AM business-day reset for daily recap logic.
+- Centralized `Asia/Jakarta` timezone enforcement across all features using `date-fns-tz`.
+- Implemented a strict 4:00 AM WIB cutoff for all business day logic, resolving inconsistent date boundaries on the recap and expense pages.
+- Added automatic, background UI refresh when the 4:00 AM rollover occurs.
 - Excel export for recap data.
 - Shared currency parsing and formatting helpers for forms and UI output.
 - Shared SVG icons for sorting, pagination, and accordion-style toggles.

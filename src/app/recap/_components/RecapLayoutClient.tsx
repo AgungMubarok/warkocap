@@ -8,18 +8,20 @@ import {
   useEffect,
   useMemo,
   useState,
+  useCallback,
   type ReactNode,
 } from "react";
 import Swal from "sweetalert2";
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import {
-  formatDateForInput,
+  getBusinessDateKey,
   getBusinessDayRange,
-  getCalendarRange,
-  getMonthRange,
-  parseDateInput,
-} from "@/lib/date-range";
+  getBusinessMonthRange,
+  getBusinessDateRange,
+  formatJakartaDateTime,
+} from "@/lib/business-time";
+import { useBusinessDayRollover } from "@/hooks/useBusinessDayRollover";
 import { getExpensesByRange, getTransactionsByRange } from "@/lib/firebase-data";
 import type { ExpenseRecord, TransactionRecord } from "@/lib/types";
 
@@ -115,10 +117,19 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [filter, setFilter] = useState<RecapFilter>("daily");
-  const [specificDate, setSpecificDate] = useState(() => formatDateForInput(new Date()));
-  const [rangeStartDate, setRangeStartDate] = useState(() => formatDateForInput(new Date()));
-  const [rangeEndDate, setRangeEndDate] = useState(() => formatDateForInput(new Date()));
+  const [specificDate, setSpecificDate] = useState(() => getBusinessDateKey());
+  const [rangeStartDate, setRangeStartDate] = useState(() => getBusinessDateKey());
+  const [rangeEndDate, setRangeEndDate] = useState(() => getBusinessDateKey());
   const [isLoading, setIsLoading] = useState(true);
+  const [rolloverTick, setRolloverTick] = useState(0);
+
+  const handleRollover = useCallback(() => {
+    // Only update states if they were set to the old "today". 
+    // Usually a simple re-trigger is enough.
+    setRolloverTick((prev) => prev + 1);
+  }, []);
+
+  useBusinessDayRollover(handleRollover);
 
   const dateRangeValidationMessage = useMemo(
     () => getDateRangeValidationMessage(rangeStartDate, rangeEndDate),
@@ -131,32 +142,23 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
     const syncRecap = async () => {
       const range = (() => {
         if (filter === "daily") {
-          return getBusinessDayRange(new Date());
+          return getBusinessDayRange();
         }
 
         if (filter === "monthly") {
-          return getMonthRange(new Date());
+          return getBusinessMonthRange();
         }
 
         if (filter === "specificDate") {
-          const parsedDate = parseDateInput(specificDate);
-
-          return parsedDate ? getCalendarRange(parsedDate, parsedDate) : null;
+          if (!specificDate) return null;
+          return getBusinessDayRange(specificDate);
         }
 
-        const startDate = parseDateInput(rangeStartDate);
-        const endDate = parseDateInput(rangeEndDate);
-
-        if (!startDate || !endDate || dateRangeValidationMessage) {
+        if (!rangeStartDate || !rangeEndDate || dateRangeValidationMessage) {
           return null;
         }
 
-        const [fromDate, toDate] =
-          rangeStartDate <= rangeEndDate
-            ? [startDate, endDate]
-            : [endDate, startDate];
-
-        return getCalendarRange(fromDate, toDate);
+        return getBusinessDateRange(rangeStartDate, rangeEndDate);
       })();
 
       if (!range) {
@@ -193,7 +195,7 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
     return () => {
       isActive = false;
     };
-  }, [dateRangeValidationMessage, filter, rangeEndDate, rangeStartDate, specificDate]);
+  }, [dateRangeValidationMessage, filter, rangeEndDate, rangeStartDate, specificDate, rolloverTick]);
 
   const summary = useMemo(() => {
     const grossRevenue = transactions.reduce(
@@ -252,7 +254,7 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
   };
 
   const handleSpecificDateChange = (value: string) => {
-    if (!value || !parseDateInput(value)) {
+    if (!value) {
       return;
     }
 
@@ -261,7 +263,7 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
   };
 
   const handleRangeDateChange = (field: "start" | "end", value: string) => {
-    if (!value || !parseDateInput(value)) {
+    if (!value) {
       return;
     }
 
@@ -288,15 +290,7 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
 
     if (transactions.length > 0) {
       const transactionSummary = transactions.map((transaction) => ({
-        "Waktu Transaksi": transaction.timestamp
-          ? transaction.timestamp.toLocaleString("id-ID", {
-              year: "numeric",
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "Tanpa tanggal",
+        "Waktu Transaksi": formatJakartaDateTime(transaction.timestamp),
         "Metode Pembayaran": transaction.paymentMethod.toUpperCase(),
         "Item Dibeli": transaction.items
           .map((item) => `${item.namaProduk} (${item.quantity})`)
@@ -308,15 +302,7 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
 
       const itemDetails = transactions.flatMap((transaction) =>
         transaction.items.map((item) => ({
-          "Waktu Transaksi": transaction.timestamp
-            ? transaction.timestamp.toLocaleString("id-ID", {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-              })
-            : "Tanpa tanggal",
+          "Waktu Transaksi": formatJakartaDateTime(transaction.timestamp),
           "Metode Pembayaran": transaction.paymentMethod.toUpperCase(),
           "Nama Produk": item.namaProduk,
           Kuantitas: item.quantity,
@@ -342,7 +328,7 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
         workbook,
         XLSX.utils.json_to_sheet(
           expenses.map((expense) => ({
-            Waktu: expense.timestamp ? expense.timestamp.toLocaleString("id-ID") : "Tanpa tanggal",
+            Waktu: formatJakartaDateTime(expense.timestamp),
             Keterangan: expense.description,
             Jumlah: expense.amount,
           }))
@@ -358,9 +344,9 @@ export default function RecapLayoutClient({ children }: { children: ReactNode })
 
     const exportLabel =
       filter === "daily"
-        ? `Harian-${formatDateForInput(new Date())}`
+        ? `Harian-${getBusinessDateKey()}`
         : filter === "monthly"
-        ? `Bulanan-${formatDateForInput(new Date()).slice(0, 7)}`
+        ? `Bulanan-${getBusinessDateKey().slice(0, 7)}`
         : filter === "specificDate"
         ? `Tanggal-${specificDate}`
         : rangeStartDate <= rangeEndDate

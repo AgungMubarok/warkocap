@@ -12,7 +12,7 @@ Warkocap Kasir v2 is a mobile-first point-of-sale application built with Next.js
 
 > **Note**: For instructions on setting up a safe local development environment with Firebase, please read the [Firebase Local Development Guide](docs/FIREBASE_LOCAL_DEVELOPMENT.md).
 - Stock-aware checkout that updates inventory through Firestore transactions.
-- Admin product management for creating, editing, deleting, and reviewing stock.
+- Admin product management for creating, editing, deleting, and reviewing stock, including a stock-status filter. Products can be filtered by 'Tersedia' (includes untracked products and those above threshold), 'Stok Rendah' (tracked products above 0 but at or below the low-stock threshold), and 'Stok Habis' (tracked products at or below 0).
 - Expense tracking with calendar-based date filters.
 - Recap dashboard with total and summary views, Excel export, and lighter range-based data loading.
 - Consistent currency formatting across tables, forms, cart totals, expenses, and recap values.
@@ -101,7 +101,7 @@ The recap page supports these modes:
 - Specific date
 - Date range
 
-Date handling follows Asia/Jakarta business time, including a daily reset at 4:00 AM for day-based recap calculations.
+Date handling enforces strict `Asia/Jakarta` business time using `date-fns-tz`, which includes a daily rollover at exactly 4:00 AM WIB. Expenses and recap queries are uniformly bound to these 4:00 AM to 3:59:59 AM periods, and the UI automatically reloads when the crossover happens.
 
 ## Main Routes
 

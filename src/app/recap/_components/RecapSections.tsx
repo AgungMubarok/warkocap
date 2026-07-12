@@ -10,6 +10,7 @@ import {
   ChevronsRightIcon,
 } from "@/components/ui/icons";
 import { formatCurrency } from "@/lib/date-range";
+import { formatJakartaDateTime } from "@/lib/business-time";
 import { useRecapContext } from "./RecapLayoutClient";
 
 const PAGE_SIZE = {
@@ -206,14 +207,7 @@ export function LatestTransactionsSection() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
-                    {transaction.timestamp
-                      ? transaction.timestamp.toLocaleString("id-ID", {
-                          day: "2-digit",
-                          month: "short",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "Tanpa tanggal"}
+                    {formatJakartaDateTime(transaction.timestamp)}
                   </p>
                   <h3 className="mt-2 text-base font-semibold text-slate-900">
                     {transaction.items[0]?.namaProduk ?? "Tanpa item"}
@@ -310,15 +304,7 @@ export function TransactionsSection() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
-                      {transaction.timestamp
-                        ? transaction.timestamp.toLocaleString("id-ID", {
-                            day: "2-digit",
-                            month: "short",
-                            year: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "Tanpa tanggal"}
+                      {formatJakartaDateTime(transaction.timestamp)}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
@@ -447,15 +433,7 @@ export function ExpensesSection() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
-                    {expense.timestamp
-                      ? expense.timestamp.toLocaleString("id-ID", {
-                          day: "2-digit",
-                          month: "short",
-                          year: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "Tanpa tanggal"}
+                    {formatJakartaDateTime(expense.timestamp)}
                   </p>
                   <h3 className="mt-2 text-base font-semibold text-slate-900">
                     {expense.description}
