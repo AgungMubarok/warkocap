@@ -1,5 +1,13 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore, connectFirestoreEmulator, doc, setDoc, runTransaction } from "firebase/firestore";
+import {
+  getFirestore,
+  connectFirestoreEmulator,
+  doc,
+  setDoc,
+  runTransaction,
+  type DocumentReference,
+  type DocumentData,
+} from "firebase/firestore";
 import * as dotenv from "dotenv";
 
 dotenv.config({ path: ".env.local" });
@@ -16,19 +24,35 @@ const db = getFirestore(app);
 
 connectFirestoreEmulator(db, "127.0.0.1", 8080);
 
-async function testTransaction(name: string, cart: Array<{ id: string; quantity: number; namaProduk: string }>) {
+interface TestCartItem {
+  id: string;
+  quantity: number;
+  namaProduk: string;
+  stok?: number | null | "";
+}
+
+function isTrackedProduct(item: TestCartItem): item is TestCartItem & { stok: number } {
+  return typeof item.stok === "number";
+}
+
+interface PendingUpdate {
+  ref: DocumentReference<DocumentData, DocumentData>;
+  nextStock: number;
+}
+
+async function testTransaction(name: string, cart: TestCartItem[]) {
   console.log(`\n--- Running Test: ${name} ---`);
   
   try {
     await runTransaction(db, async (transaction) => {
       // Phase 1: READ
-      const trackedItems = cart.filter((item) => typeof item.stok === "number" || item.id === "TRACKED" || item.id === "TRACKED2");
+      const trackedItems = cart.filter(isTrackedProduct);
       const snapshots = await Promise.all(
         trackedItems.map((item) => transaction.get(doc(db, "products", item.id)))
       );
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pendingUpdates: any[] = [];
+      // Phase 2: VALIDATE
+      const pendingUpdates: PendingUpdate[] = [];
       for (let i = 0; i < trackedItems.length; i++) {
         const item = trackedItems[i];
         const snapshot = snapshots[i];
@@ -71,17 +95,17 @@ async function main() {
   // Tests
   await testTransaction("A. Untracked (Missing) then Tracked", [
     { id: "UNTRACKED_MISSING", quantity: 1, namaProduk: "Missing" },
-    { id: "TRACKED", quantity: 1, namaProduk: "Tracked" }
+    { id: "TRACKED", quantity: 1, namaProduk: "Tracked", stok: 100 }
   ]);
   
   await testTransaction("B. Tracked then Untracked (Missing)", [
-    { id: "TRACKED", quantity: 1, namaProduk: "Tracked" },
+    { id: "TRACKED", quantity: 1, namaProduk: "Tracked", stok: 100 },
     { id: "UNTRACKED_MISSING", quantity: 1, namaProduk: "Missing" }
   ]);
   
   await testTransaction("C. Two tracked products", [
-    { id: "TRACKED", quantity: 1, namaProduk: "Tracked" },
-    { id: "TRACKED2", quantity: 1, namaProduk: "Tracked 2" }
+    { id: "TRACKED", quantity: 1, namaProduk: "Tracked", stok: 100 },
+    { id: "TRACKED2", quantity: 1, namaProduk: "Tracked 2", stok: 100 }
   ]);
   
   await testTransaction("D. Two untracked products (Missing)", [
@@ -91,17 +115,17 @@ async function main() {
   
   await testTransaction("E. Untracked (Missing) then Tracked", [
     { id: "UNTRACKED_MISSING", quantity: 1, namaProduk: "Missing" },
-    { id: "TRACKED", quantity: 1, namaProduk: "Tracked" }
+    { id: "TRACKED", quantity: 1, namaProduk: "Tracked", stok: 100 }
   ]);
 
   await testTransaction("F. Untracked (Null) then Tracked", [
-    { id: "UNTRACKED_NULL", quantity: 1, namaProduk: "Null" },
-    { id: "TRACKED", quantity: 1, namaProduk: "Tracked" }
+    { id: "UNTRACKED_NULL", quantity: 1, namaProduk: "Null", stok: null },
+    { id: "TRACKED", quantity: 1, namaProduk: "Tracked", stok: 100 }
   ]);
   
   await testTransaction("G. Untracked (Empty String) then Tracked", [
-    { id: "UNTRACKED_EMPTY_STR", quantity: 1, namaProduk: "Empty" },
-    { id: "TRACKED", quantity: 1, namaProduk: "Tracked" }
+    { id: "UNTRACKED_EMPTY_STR", quantity: 1, namaProduk: "Empty", stok: "" },
+    { id: "TRACKED", quantity: 1, namaProduk: "Tracked", stok: 100 }
   ]);
 
   console.log("Done");

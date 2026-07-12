@@ -12,7 +12,8 @@
     "emulators": "firebase emulators:start --project demo-warkocap --import=./firebase-data --export-on-exit=./firebase-data",
     "emulators:export": "firebase emulators:export ./firebase-data --force",
     "emulators:reset": "rm -rf ./firebase-data",
-    "seed:emulator": "NEXT_PUBLIC_APP_ENV=emulator NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-warkocap npx tsx scripts/seed.ts"
+    "seed:emulator": "NEXT_PUBLIC_APP_ENV=emulator NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-warkocap npx tsx scripts/seed.ts",
+    "test:checkout-bug": "NEXT_PUBLIC_APP_ENV=emulator NEXT_PUBLIC_FIREBASE_PROJECT_ID=demo-warkocap npx tsx scripts/test-checkout-bug.ts"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
