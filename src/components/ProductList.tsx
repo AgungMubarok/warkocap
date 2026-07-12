@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { collection, onSnapshot } from "firebase/firestore";
-import { db } from "@/lib/firebase"; // Import koneksi firestore
+import { db } from "@/lib/firebase/client"; // Import koneksi firestore
 import { formatCurrency } from "@/lib/date-range";
 
 // Definisikan tipe data untuk produk

@@ -6,6 +6,11 @@ Warkocap Kasir v2 is a mobile-first point-of-sale application built with Next.js
 
 - Passcode-based login with separate admin and cashier roles.
 - Session-cached product catalog to avoid unnecessary repeated Firestore reads.
+- Firebase (Firestore & Hosting)
+- PWA Support (next-pwa)
+- Firebase Local Emulator Suite support for safe development
+
+> **Note**: For instructions on setting up a safe local development environment with Firebase, please read the [Firebase Local Development Guide](docs/FIREBASE_LOCAL_DEVELOPMENT.md).
 - Stock-aware checkout that updates inventory through Firestore transactions.
 - Admin product management for creating, editing, deleting, and reviewing stock.
 - Expense tracking with calendar-based date filters.

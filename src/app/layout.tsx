@@ -3,6 +3,7 @@ import { Fraunces, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 import "sweetalert2/src/sweetalert2.scss";
 import Header from "@/components/Header";
+import EnvBadge from "@/components/EnvBadge";
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
@@ -43,6 +44,7 @@ export default function RootLayout({
             {children}
           </main>
         </div>
+        <EnvBadge />
       </body>
     </html>
   );

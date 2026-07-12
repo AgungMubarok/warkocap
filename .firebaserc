@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "demo-warkocap",
+    "dev": "dev-warkocap",
+    "prod": "pos-apps-80dbe"
+  }
+}

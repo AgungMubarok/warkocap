@@ -12,7 +12,7 @@ import {
 import Modal from "react-modal";
 import Swal from "sweetalert2";
 import withAuth from "@/hooks/withAuth";
-import { db } from "@/lib/firebase";
+import { db } from "@/lib/firebase/client";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,

@@ -8,7 +8,7 @@ import {
   type QueryDocumentSnapshot,
   type Timestamp,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db } from "@/lib/firebase/client";
 import {
   readSessionCache,
   removeSessionCacheByPrefix,

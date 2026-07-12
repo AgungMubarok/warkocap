@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db } from "@/lib/firebase/client";
 import withAuth from "@/hooks/withAuth";
 import Link from "next/link";
 import Swal from "sweetalert2";

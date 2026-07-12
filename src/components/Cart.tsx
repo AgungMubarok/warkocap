@@ -6,8 +6,10 @@ import {
   doc,
   runTransaction,
   serverTimestamp,
+  type DocumentReference,
+  type DocumentData,
 } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db } from "@/lib/firebase/client";
 import Swal from "sweetalert2";
 import Modal from "react-modal";
 import { formatCurrency } from "@/lib/date-range";
@@ -126,18 +128,33 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
     };
 
     try {
-      const stockUpdates: Array<{ productId: string; stok: number | null }> = [];
+      let stockUpdates: Array<{ productId: string; stok: number | null }> = [];
 
       await runTransaction(db, async (transaction) => {
-        for (const item of cart) {
-          const productRef = doc(db, "products", item.id);
-          const productSnapshot = await transaction.get(productRef);
-          const productData = productSnapshot.data();
+        stockUpdates = []; // Reset in case of transaction retry
 
-          if (!productSnapshot.exists()) {
+        // Phase 1: READ
+        const trackedItems = cart.filter((item) => typeof item.stok === "number");
+        
+        const snapshots = await Promise.all(
+          trackedItems.map((item) => {
+            const productRef = doc(db, "products", item.id);
+            return transaction.get(productRef);
+          })
+        );
+
+        // Phase 2: VALIDATE
+        const pendingUpdates: Array<{ ref: DocumentReference<DocumentData, DocumentData>; nextStock: number; productId: string }> = [];
+        
+        for (let i = 0; i < trackedItems.length; i++) {
+          const item = trackedItems[i];
+          const snapshot = snapshots[i];
+          
+          if (!snapshot.exists()) {
             throw new Error(`Produk ${item.namaProduk} tidak ditemukan.`);
           }
-
+          
+          const productData = snapshot.data();
           if (typeof productData?.stok === "number") {
             const currentStock = Number(productData.stok);
 
@@ -146,12 +163,21 @@ export default function Cart({ cart, onUpdateCart }: CartProps) {
             }
 
             const nextStock = currentStock - item.quantity;
-            transaction.update(productRef, {
-              stok: nextStock,
-              updatedAt: serverTimestamp(),
+            pendingUpdates.push({
+              ref: snapshot.ref,
+              nextStock,
+              productId: item.id,
             });
-            stockUpdates.push({ productId: item.id, stok: nextStock });
           }
+        }
+
+        // Phase 3: WRITE
+        for (const update of pendingUpdates) {
+          transaction.update(update.ref, {
+            stok: update.nextStock,
+            updatedAt: serverTimestamp(),
+          });
+          stockUpdates.push({ productId: update.productId, stok: update.nextStock });
         }
 
         const transactionRef = doc(collection(db, "transactions"));
