@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { getMsUntilNextBusinessDay } from "@/lib/business-time";
 
 /**
- * Hook to automatically trigger a callback when the 04:00 WIB business day rolls over.
+ * Hook to automatically trigger a callback when the 00:00 WIB business day rolls over.
  * Also triggers when the tab regains focus (e.g. device wakes up from sleep).
  * 
  * @param onRollover - Callback to execute when rollover happens

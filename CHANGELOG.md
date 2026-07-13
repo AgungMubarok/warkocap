@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Migrated business-day cutoff from 04:00 WIB to 00:00 WIB.
+- Centralized business-time configuration to `src/lib/business-time.ts` for easy future cutoff changes. Warkocap continues to use `Asia/Jakarta` time zone.
+
 ## 2.0.0 - 2026-05-31
 
 ### Added
@@ -14,8 +21,8 @@ All notable changes to this project are documented in this file.
 - Expense filtering by calendar dates.
 - Expanded recap filters for daily, monthly, yearly, specific date, and date range modes.
 - Centralized `Asia/Jakarta` timezone enforcement across all features using `date-fns-tz`.
-- Implemented a strict 4:00 AM WIB cutoff for all business day logic, resolving inconsistent date boundaries on the recap and expense pages.
-- Added automatic, background UI refresh when the 4:00 AM rollover occurs.
+- Implemented a strict 00:00 WIB cutoff for all business day logic (originally 4:00 AM), resolving inconsistent date boundaries on the recap and expense pages.
+- Added automatic, background UI refresh when the 00:00 rollover occurs.
 - Excel export for recap data.
 - Shared currency parsing and formatting helpers for forms and UI output.
 - Shared SVG icons for sorting, pagination, and accordion-style toggles.

@@ -101,7 +101,7 @@ The recap page supports these modes:
 - Specific date
 - Date range
 
-Date handling enforces strict `Asia/Jakarta` business time using `date-fns-tz`, which includes a daily rollover at exactly 4:00 AM WIB. Expenses and recap queries are uniformly bound to these 4:00 AM to 3:59:59 AM periods, and the UI automatically reloads when the crossover happens.
+Date handling enforces strict `Asia/Jakarta` business time using `date-fns-tz`, which includes a daily rollover at exactly 00:00 WIB. Expenses and recap queries are uniformly bound to this exact midnight cutoff, and the UI automatically reloads when the crossover happens. The cutoff is configured centrally in `src/lib/business-time.ts` and future changes only require editing that config.
 
 ## Main Routes
 
